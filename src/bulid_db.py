@@ -6,12 +6,13 @@ New code should import from src.indexing.
 
 from __future__ import annotations
 
+import hashlib
+
 from langchain_core.documents import Document
 
-from src.config import Config
 from src.indexing import IndexingService, build_and_save_db, get_db_stats
 from src.models import ContentElement, PaperDocument, ParsedDocument, utc_now_iso
-from src.parsers.base import clean_text, document_id_from_hash, hash_file
+from src.parsers.base import clean_text, document_id_from_hash
 
 
 def add_documents(new_docs: list[Document], embedding_model=None):
@@ -23,14 +24,19 @@ def add_documents(new_docs: list[Document], embedding_model=None):
     imported = []
     for idx, doc in enumerate(new_docs, 1):
         source = str(doc.metadata.get("source", f"imported-{idx}"))
-        pseudo_hash = document_id_from_hash(str(abs(hash((source, doc.page_content)))))
+        digest = hashlib.sha256()
+        digest.update(source.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+        digest.update(doc.page_content.encode("utf-8", errors="replace"))
+        sha256 = digest.hexdigest()
+        document_id = document_id_from_hash(sha256)
         document = PaperDocument(
-            document_id=pseudo_hash,
+            document_id=document_id,
             source_path=source,
             filename=source.split("\\")[-1].split("/")[-1],
             file_type="imported",
             title=doc.metadata.get("title") or source,
-            sha256=pseudo_hash.replace("doc_", "").ljust(64, "0")[:64],
+            sha256=sha256,
             parser="langchain-import",
             created_at=utc_now_iso(),
             updated_at=utc_now_iso(),

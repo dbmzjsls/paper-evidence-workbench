@@ -36,35 +36,37 @@ class ResearchRAG:
         exclude_keywords: list[str] | None = None,
     ) -> list[RetrievedEvidence]:
         k = k or Config.RETRIEVAL_CONTEXTS
-        chunks = self.storage.get_all_chunks()
-        if not chunks:
-            return []
-
         include_keywords = [kw.strip() for kw in include_keywords or [] if kw.strip()]
         exclude_keywords = [kw.strip() for kw in exclude_keywords or [] if kw.strip()]
-        filtered = [
-            chunk
-            for chunk in chunks
-            if self._passes_filters(chunk, include_keywords, exclude_keywords)
-        ]
-        if not filtered:
-            return []
 
-        by_id = {chunk.chunk_id: chunk for chunk in filtered}
+        candidate_limit = max(k * 20, Config.KEYWORD_CANDIDATE_LIMIT)
+        keyword_candidates = self.storage.search_chunks(
+            query,
+            limit=candidate_limit,
+            include_keywords=include_keywords,
+            exclude_keywords=exclude_keywords,
+        )
+        by_id = {chunk.chunk_id: chunk for chunk in keyword_candidates}
         scores: dict[str, float] = {}
 
         vector_hits = self._vector_rank_scores(query, k=max(k * 4, Config.VECTOR_K))
+        for chunk in self.storage.get_chunks_by_ids(vector_hits.keys()):
+            if self._passes_filters(chunk, include_keywords, exclude_keywords):
+                by_id[chunk.chunk_id] = chunk
+
         for chunk_id, score in vector_hits.items():
             if chunk_id in by_id:
                 scores[chunk_id] = scores.get(chunk_id, 0.0) + score * 0.65
 
-        keyword_scores = self._keyword_scores(query, filtered)
+        keyword_scores = self._keyword_scores(query, keyword_candidates)
         for chunk_id, score in keyword_scores.items():
             scores[chunk_id] = scores.get(chunk_id, 0.0) + score * 0.35
 
         if not scores:
-            for chunk in filtered:
+            for chunk in by_id.values():
                 scores[chunk.chunk_id] = self._keyword_score(query, chunk.search_text)
+        if not scores:
+            return []
 
         ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         return [
@@ -179,6 +181,11 @@ class ResearchRAG:
 
     def _load_vectorstore(self):
         if self._vectorstore is None:
+            if not Config.TRUST_LOCAL_FAISS_INDEX:
+                raise RuntimeError(
+                    "Local FAISS loading is disabled. Set TRUST_LOCAL_FAISS_INDEX=true "
+                    "only for trusted index files."
+                )
             from langchain_community.vectorstores import FAISS
             from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -189,7 +196,7 @@ class ResearchRAG:
             self._vectorstore = FAISS.load_local(
                 Config.VECTOR_DIR,
                 embeddings=embeddings,
-                allow_dangerous_deserialization=True,
+                allow_dangerous_deserialization=Config.TRUST_LOCAL_FAISS_INDEX,
             )
         return self._vectorstore
 
@@ -215,8 +222,17 @@ class ResearchRAG:
         return score
 
     def _tokens(self, text: str) -> list[str]:
-        tokens = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", text.lower())
-        return [t for t in tokens if len(t) > 1 or re.search(r"[a-zA-Z0-9]", t)]
+        tokens: list[str] = []
+        for token in re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+", text.lower()):
+            if re.search(r"[A-Za-z0-9_]", token):
+                if len(token) > 1:
+                    tokens.append(token)
+                continue
+            if len(token) <= 4:
+                tokens.append(token)
+            else:
+                tokens.extend(token[i : i + 2] for i in range(len(token) - 1))
+        return list(dict.fromkeys(tokens))
 
     def _passes_filters(
         self,

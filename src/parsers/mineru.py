@@ -337,11 +337,15 @@ class MinerUDocumentParser(BaseParser):
         if not rel_path:
             return ""
 
+        parse_root = parse_dir.resolve()
         source = Path(rel_path)
-        if not source.is_absolute():
-            source = parse_dir / rel_path
-        if not source.exists():
-            return rel_path
+        source = source.resolve() if source.is_absolute() else (parse_root / source).resolve()
+        try:
+            source.relative_to(parse_root)
+        except ValueError:
+            return ""
+        if not source.exists() or not source.is_file():
+            return ""
 
         target_dir = self.asset_dir / document_id
         target_dir.mkdir(parents=True, exist_ok=True)

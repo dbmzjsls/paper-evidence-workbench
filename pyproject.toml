@@ -1,7 +1,7 @@
 [project]
 name = "rerank"
 version = "0.2.0"
-description = "RAG system with Hybrid + Rerank retrieval for 500+ PDF documents"
+description = "Evidence-grounded multi-format research paper retrieval workbench"
 requires-python = ">=3.10"
 dependencies = [
     "cryptography>=3.1",

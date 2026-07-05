@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from typing import Any, Iterable, Optional, TypeVar
@@ -37,7 +38,9 @@ def _loads(data: Optional[str], default: Any) -> Any:
 class CorpusStorage:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or Config.SQLITE_PATH
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        db_dir = os.path.dirname(os.path.abspath(self.db_path))
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         self.init_schema()
 
     @contextmanager
@@ -144,12 +147,40 @@ class CorpusStorage:
                 );
                 """
             )
+            self._ensure_fts(conn)
+
+    def _ensure_fts(self, conn: sqlite3.Connection) -> bool:
+        try:
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                    chunk_id UNINDEXED,
+                    document_id UNINDEXED,
+                    search_text,
+                    text,
+                    tokenize='unicode61'
+                )
+                """
+            )
+            return True
+        except sqlite3.OperationalError:
+            return False
+
+    def _delete_fts_document(self, conn: sqlite3.Connection, document_id: str) -> None:
+        try:
+            conn.execute("DELETE FROM chunks_fts WHERE document_id = ?", (document_id,))
+        except sqlite3.OperationalError:
+            pass
 
     def clear_corpus(self) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM reports")
             conn.execute("DELETE FROM assets")
             conn.execute("DELETE FROM chunks")
+            try:
+                conn.execute("DELETE FROM chunks_fts")
+            except sqlite3.OperationalError:
+                pass
             conn.execute("DELETE FROM elements")
             conn.execute("DELETE FROM documents")
 
@@ -184,6 +215,7 @@ class CorpusStorage:
         with self.connect() as conn:
             conn.execute("DELETE FROM assets WHERE document_id = ?", (document_id,))
             conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
+            self._delete_fts_document(conn, document_id)
             conn.execute("DELETE FROM elements WHERE document_id = ?", (document_id,))
 
     def save_elements(self, document_id: str, elements: list[ContentElement]) -> None:
@@ -221,6 +253,7 @@ class CorpusStorage:
     def save_chunks(self, document_id: str, chunks: list[EvidenceChunk]) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
+            self._delete_fts_document(conn, document_id)
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO chunks (
@@ -245,6 +278,16 @@ class CorpusStorage:
                     for c in chunks
                 ],
             )
+            try:
+                conn.executemany(
+                    """
+                    INSERT INTO chunks_fts (chunk_id, document_id, search_text, text)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    [(c.chunk_id, c.document_id, c.search_text, c.text) for c in chunks],
+                )
+            except sqlite3.OperationalError:
+                pass
 
     def save_assets(self, document_id: str, assets: list[AssetRef]) -> None:
         with self.connect() as conn:
@@ -330,6 +373,120 @@ class CorpusStorage:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM chunks ORDER BY rowid ASC").fetchall()
         return [self._row_to_chunk(row) for row in rows]
+
+    def search_chunks(
+        self,
+        query: str,
+        limit: int = 200,
+        include_keywords: list[str] | None = None,
+        exclude_keywords: list[str] | None = None,
+    ) -> list[EvidenceChunk]:
+        limit = max(1, int(limit))
+        include_keywords = [kw.strip().lower() for kw in include_keywords or [] if kw.strip()]
+        exclude_keywords = [kw.strip().lower() for kw in exclude_keywords or [] if kw.strip()]
+        terms = self._search_terms(query)
+        chunks = self._search_chunks_fts(terms, limit, include_keywords, exclude_keywords)
+        if chunks:
+            return chunks
+        return self._search_chunks_like(terms, limit, include_keywords, exclude_keywords)
+
+    def _search_chunks_fts(
+        self,
+        terms: list[str],
+        limit: int,
+        include_keywords: list[str],
+        exclude_keywords: list[str],
+    ) -> list[EvidenceChunk]:
+        if not terms:
+            return []
+        match = " OR ".join(self._fts_quote(term) for term in terms[:16])
+        filters, params = self._keyword_sql_filters(include_keywords, exclude_keywords)
+        params = [match, limit * 3, *params, limit]
+        where = f"WHERE {filters}" if filters else ""
+        try:
+            with self.connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    WITH matches AS (
+                        SELECT chunk_id, bm25(chunks_fts) AS rank
+                        FROM chunks_fts
+                        WHERE chunks_fts MATCH ?
+                        ORDER BY rank
+                        LIMIT ?
+                    )
+                    SELECT chunks.*
+                    FROM matches
+                    JOIN chunks ON chunks.chunk_id = matches.chunk_id
+                    {where}
+                    ORDER BY matches.rank ASC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [self._row_to_chunk(row) for row in rows]
+
+    def _search_chunks_like(
+        self,
+        terms: list[str],
+        limit: int,
+        include_keywords: list[str],
+        exclude_keywords: list[str],
+    ) -> list[EvidenceChunk]:
+        filters, filter_params = self._keyword_sql_filters(include_keywords, exclude_keywords)
+        term_filters = []
+        term_params = []
+        for term in terms[:12]:
+            term_filters.append("LOWER(search_text) LIKE ?")
+            term_params.append(f"%{term.lower()}%")
+        if term_filters:
+            filters = " AND ".join([f"({' OR '.join(term_filters)})", filters] if filters else [f"({' OR '.join(term_filters)})"])
+        where = f"WHERE {filters}" if filters else ""
+        params = term_params + filter_params
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM chunks
+                {where}
+                ORDER BY rowid ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [self._row_to_chunk(row) for row in rows]
+
+    def _keyword_sql_filters(
+        self,
+        include_keywords: list[str],
+        exclude_keywords: list[str],
+    ) -> tuple[str, list[str]]:
+        filters: list[str] = []
+        params: list[str] = []
+        for keyword in include_keywords:
+            filters.append("LOWER(chunks.search_text) LIKE ?")
+            params.append(f"%{keyword}%")
+        for keyword in exclude_keywords:
+            filters.append("LOWER(chunks.search_text) NOT LIKE ?")
+            params.append(f"%{keyword}%")
+        return " AND ".join(filters), params
+
+    def _fts_quote(self, term: str) -> str:
+        return '"' + term.replace('"', '""') + '"'
+
+    def _search_terms(self, text: str) -> list[str]:
+        terms: list[str] = []
+        for token in re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+", text.lower()):
+            if re.search(r"[A-Za-z0-9_]", token):
+                if len(token) > 1:
+                    terms.append(token)
+                continue
+            if len(token) <= 4:
+                terms.append(token)
+            else:
+                terms.extend(token[i : i + 2] for i in range(len(token) - 1))
+        return list(dict.fromkeys(terms))
 
     def get_chunk(self, chunk_id: str) -> Optional[EvidenceChunk]:
         with self.connect() as conn:

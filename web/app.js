@@ -164,7 +164,9 @@ function startPolling(jobId) {
   state.pollTimer = setInterval(async () => {
     try {
       const job = await api(`/jobs/${jobId}`);
-      els.jobStatus.textContent = `${job.status}: ${job.message || ""} (${job.processed_files}/${job.total_files})`;
+      const completed = (job.processed_files || 0) + (job.failed_files || 0);
+      const failed = job.failed_files ? `, ${job.failed_files} failed` : "";
+      els.jobStatus.textContent = `${job.status}: ${job.message || ""} (${completed}/${job.total_files}${failed})`;
       if (["completed", "failed", "partial"].includes(job.status)) {
         clearInterval(state.pollTimer);
         await refreshAll();

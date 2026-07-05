@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 
 from fastapi.testclient import TestClient
+from langchain_core.documents import Document
 
 import api
+import src.bulid_db as legacy_db
 from src.config import Config
 from src.indexing import IndexingService
 from src.models import ContentElement, PaperDocument, ParsedDocument, utc_now_iso
@@ -94,6 +96,22 @@ def test_plain_csv_routes_to_table_element(tmp_path):
     assert "accuracy" in parsed.elements[0].text
 
 
+def test_mineru_asset_copy_rejects_missing_and_traversal_paths(tmp_path):
+    parse_dir = tmp_path / "parsed" / "paper" / "auto"
+    image_dir = parse_dir / "images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "ok.png").write_bytes(b"image")
+    (tmp_path / "outside.png").write_bytes(b"outside")
+
+    parser = MinerUDocumentParser(output_dir=tmp_path / "parsed", asset_dir=tmp_path / "assets")
+
+    assert parser._copy_asset(parse_dir, "doc_test", "../outside.png") == ""
+    assert parser._copy_asset(parse_dir, "doc_test", "images/missing.png") == ""
+    copied = parser._copy_asset(parse_dir, "doc_test", "images/ok.png")
+    assert copied.endswith("ok.png")
+    assert (tmp_path / "assets" / "doc_test" / "ok.png").exists()
+
+
 def test_ingestion_deduplicates_before_parsing_and_retrieval_screens_without_vectors(
     tmp_path,
     monkeypatch,
@@ -132,6 +150,70 @@ def test_ingestion_deduplicates_before_parsing_and_retrieval_screens_without_vec
         "可作为辅助阅读",
         "相关性较弱，先暂缓",
     }
+
+
+def test_storage_bare_sqlite_path_and_limited_search_do_not_require_full_scan(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    storage = CorpusStorage("corpus.sqlite3")
+    service = IndexingService(storage=storage, build_vectors=False)
+
+    document = PaperDocument(
+        document_id="doc_search",
+        source_path=str(tmp_path / "paper.md"),
+        filename="paper.md",
+        file_type="md",
+        title="Search Paper",
+        sha256="b" * 64,
+        parser="test",
+        created_at=utc_now_iso(),
+        updated_at=utc_now_iso(),
+    )
+    element = ContentElement(
+        element_id="doc_search_el_000001",
+        document_id=document.document_id,
+        sequence=1,
+        type="text",
+        text=clean_text("negative reviews reduce purchase intention"),
+    )
+    service.save_parsed_document(ParsedDocument(document=document, elements=[element]))
+
+    assert (tmp_path / "corpus.sqlite3").exists()
+    assert storage.search_chunks("negative reviews", limit=5)
+
+    def fail_full_scan():
+        raise AssertionError("retrieval should use candidate search, not get_all_chunks")
+
+    monkeypatch.setattr(storage, "get_all_chunks", fail_full_scan)
+    result = ResearchRAG(storage=storage).answer("negative reviews")
+    assert result.citations
+
+
+def test_legacy_add_documents_uses_stable_digest(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy.sqlite3"
+    monkeypatch.setattr(Config, "SQLITE_PATH", str(db_path))
+    monkeypatch.setattr(Config, "VECTOR_DIR", str(tmp_path / "vectors"))
+    monkeypatch.setattr(Config, "DOCS_DIR", str(tmp_path / "docs.pkl"))
+    monkeypatch.setattr(
+        legacy_db.IndexingService,
+        "rebuild_vector_index",
+        lambda self: {"status": "skipped"},
+    )
+
+    doc = Document(
+        page_content="stable imported content",
+        metadata={"source": "legacy-paper.md", "title": "Legacy Paper"},
+    )
+    legacy_db.add_documents([doc])
+    legacy_db.add_documents([doc])
+
+    storage = CorpusStorage(str(db_path))
+    documents = storage.list_documents()
+    assert len(documents) == 1
+    assert documents[0].sha256
+    assert documents[0].document_id.startswith("doc_")
 
 
 def test_stats_distinguishes_empty_stale_and_ready_index(tmp_path, monkeypatch):
@@ -174,6 +256,19 @@ def test_stats_distinguishes_empty_stale_and_ready_index(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     assert service.stats()["status"] == "ready"
+
+
+def test_faiss_loading_requires_trusted_local_index(tmp_path, monkeypatch):
+    vector_dir = tmp_path / "vectors"
+    vector_dir.mkdir()
+    (vector_dir / "index.faiss").write_bytes(b"fake")
+    monkeypatch.setattr(Config, "VECTOR_DIR", str(vector_dir))
+    monkeypatch.setattr(Config, "TRUST_LOCAL_FAISS_INDEX", False)
+
+    assert ResearchRAG(storage=CorpusStorage(str(tmp_path / "corpus.sqlite3")))._vector_rank_scores(
+        "query",
+        k=2,
+    ) == {}
 
 
 def test_upload_rejects_unsupported_batch_without_partial_files(tmp_path, monkeypatch):

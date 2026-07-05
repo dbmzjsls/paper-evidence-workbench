@@ -21,6 +21,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_list(name: str, default: str) -> list[str]:
+    value = os.getenv(name, default)
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 class Config:
     # ========== 路径配置 ==========
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -114,6 +119,8 @@ class Config:
     RETRIEVAL_CONTEXTS = _env_int("RETRIEVAL_CONTEXTS", 8)
     SCREEN_DEFAULT_LIMIT = _env_int("SCREEN_DEFAULT_LIMIT", 10)
     SCREEN_MAX_LIMIT = _env_int("SCREEN_MAX_LIMIT", 50)
+    CORS_ALLOW_ORIGINS = _env_list("CORS_ALLOW_ORIGINS", "*")
+    CORS_ALLOW_CREDENTIALS = _env_bool("CORS_ALLOW_CREDENTIALS", False)
 
     # ========== FAISS 索引配置 ==========
     FAISS_INDEX_TYPE: str = "HNSW"  # "HNSW" | "Flat" | "IVF"
@@ -139,6 +146,8 @@ class Config:
     RETRIEVER_K: int = 5  # 最终返回文档数
     BM25_K: int = 10  # BM25 检索数量
     VECTOR_K: int = 10  # 向量检索数量
+    KEYWORD_CANDIDATE_LIMIT: int = _env_int("KEYWORD_CANDIDATE_LIMIT", 500)
+    TRUST_LOCAL_FAISS_INDEX: bool = _env_bool("TRUST_LOCAL_FAISS_INDEX", False)
     ENSEMBLE_WEIGHTS: list = [0.4, 0.6]  # [BM25权重, 向量权重]
     TOP_N: int = 2  # Rerank 后保留
 
@@ -167,4 +176,6 @@ class Config:
             cls.WEB_DIR,
         ]:
             os.makedirs(d, exist_ok=True)
-        os.makedirs(os.path.dirname(cls.SQLITE_PATH), exist_ok=True)
+        sqlite_dir = os.path.dirname(os.path.abspath(cls.SQLITE_PATH))
+        if sqlite_dir:
+            os.makedirs(sqlite_dir, exist_ok=True)

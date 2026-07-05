@@ -86,9 +86,14 @@ MINERU_LANG=ch
 MINERU_FORMULA=true
 MINERU_TABLE=true
 AUTO_INGEST_ON_STARTUP=false
+CORS_ALLOW_ORIGINS=*
+CORS_ALLOW_CREDENTIALS=false
+TRUST_LOCAL_FAISS_INDEX=false
+KEYWORD_CANDIDATE_LIMIT=500
 ```
 
 默认 MinerU 后端为 CPU 友好的 `pipeline`。更高精度的 hybrid/VLM 后端可以通过环境变量切换。
+默认不加载未经显式信任的本地 FAISS pickle 索引；需要启用向量索引检索时，请确认索引文件来自本机可信构建流程后设置 `TRUST_LOCAL_FAISS_INDEX=true`。
 
 ## Tests
 
