@@ -1,88 +1,97 @@
-# Rerank RAG 项目
+# Research Paper Retrieval Workbench
 
-基于 LangChain 的检索增强生成（RAG）系统，集成混合检索 + 查询重写 + 重排序（Rerank）的漏斗式检索流水线。
+带 Web 工作台的科研论文增强检索系统。V1 支持导入 PDF、DOCX、PPTX、XLSX、图片、TXT、Markdown、HTML、CSV，保留文本、表格、图片、公式等证据块，并基于研究主题生成可追溯的论文筛选报告。
 
-## 架构
+## What Changed
 
-```
-用户提问
-  └─> MultiQueryRetriever（查询重写，生成多条 query）
-        └─> EnsembleRetriever（混合检索）
-              ├─> BM25Retriever（稀疏检索，字面匹配）
-              └─> FAISS VectorRetriever（稠密检索，语义匹配）
-        └─> CrossEncoderReranker（重排序，精选 top_n 文档）
-  └─> LLM 生成回答
-```
+- MinerU 3.x 输出适配：优先读取 `*_content_list_v2.json`，回退到 `*_content_list.json` 和 Markdown。
+- SQLite 成为语料库事实层：保存 documents、elements、chunks、assets、jobs、reports。
+- FAISS 只负责向量索引；旧 `docs.pkl` 仅保留兼容。
+- 查询和筛选都会返回 citations 和 contexts，回答不再是无出处文本。
+- FastAPI 直接服务 `web/` 静态工作台。
 
-## 环境要求
+## Setup
 
-- Python >= 3.10
-- [uv](https://docs.astral.sh/uv/) 包管理器
-- DashScope API Key（阿里云百炼）
-
-## 快速开始
-
-**1. 安装依赖**
 ```bash
-uv sync
+uv sync --group dev
 ```
 
-**2. 配置环境变量**
+如需 LLM 生成式回答，配置：
 
-创建 `.env` 文件：
-```
-DASHSCOPE_API_KEY=your_api_key_here
-```
-
-**3. 添加文档**
-
-将 PDF 文件放入 `data/` 目录：
-```
-data/
-├── 文档1.pdf
-└── 文档2.pdf
+```env
+DASHSCOPE_API_KEY=your_key
 ```
 
-**4. 运行**
+无 API key 时，系统仍可执行导入、关键词/向量检索、抽取式回答和论文筛选。
+
+## CLI
+
 ```bash
-uv run python main.py
+# 导入 data/ 目录下所有支持文件
+uv run python main.py ingest --path data/
+
+# 查看语料库状态
+uv run python main.py stats
+
+# 基于证据问答
+uv run python main.py query "新能源汽车负面口碑如何影响购买意愿？"
+
+# 按研究主题筛选论文
+uv run python main.py screen "新能源汽车负面口碑与购买意愿" --limit 10
 ```
 
-首次运行会自动构建向量数据库，之后直接加载。
+旧用法仍可用：
 
-## 项目结构
-
-```
-Rerank/
-├── data/               # 放置 PDF 文档
-├── vectorstore/        # 自动生成，存储向量库和文档
-│   ├── faiss_index/
-│   └── docs.pkl
-├── src/
-│   ├── config.py       # 全局配置
-│   ├── bulid_db.py     # 构建向量数据库
-│   └── rag_chain.py    # RAG 检索链
-├── main.py
-└── pyproject.toml
-```
-
-## 配置说明
-
-`src/config.py` 中可调整的参数：
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `CHUNK_SIZE` | 500 | 文本分块大小 |
-| `CHUNK_OVERLAP` | 50 | 分块重叠字符数 |
-| `retriever_k` | 5 | 检索返回文档数 |
-| `top_n` | 2 | Rerank 后保留文档数 |
-| `llm_model` | qwen-plus | LLM 模型 |
-| `llm_temperature` | 0.2 | 生成温度 |
-
-## 重建向量数据库
-
-更换文档后需删除旧数据库：
 ```bash
-rm -rf vectorstore/
-uv run python main.py
+uv run python main.py --question "你的问题"
+uv run python main.py --stats
+```
+
+## Web API
+
+启动：
+
+```bash
+uv run uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+```
+
+打开：
+
+```text
+http://localhost:8000
+```
+
+主要接口：
+
+- `POST /documents/upload`：多文件上传，返回 `job_id`
+- `GET /jobs/{job_id}`：查看解析/索引进度
+- `GET /documents`、`GET /documents/{document_id}`：查看论文和证据
+- `POST /query`：返回 `answer`、`citations`、`contexts`
+- `POST /screen`：按研究主题生成论文筛选报告
+- `POST /documents/rebuild`：重建 `data/` 语料库
+- `POST /documents/reindex`：从 SQLite chunks 重建 FAISS
+
+## Configuration
+
+常用环境变量：
+
+```env
+PAPER_STORAGE_DIR=./data
+PARSED_DIR=./data/parsed
+ASSET_DIR=./data/assets
+SQLITE_PATH=./vectorstore/paper_corpus.sqlite3
+MINERU_BACKEND=pipeline
+MINERU_METHOD=auto
+MINERU_LANG=ch
+MINERU_FORMULA=true
+MINERU_TABLE=true
+AUTO_INGEST_ON_STARTUP=false
+```
+
+默认 MinerU 后端为 CPU 友好的 `pipeline`。更高精度的 hybrid/VLM 后端可以通过环境变量切换。
+
+## Tests
+
+```bash
+uv run --group dev python -m pytest tests -q
 ```
