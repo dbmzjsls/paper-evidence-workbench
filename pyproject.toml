@@ -1,7 +1,7 @@
 [project]
 name = "rerank"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "Evidence-grounded multi-format research paper retrieval workbench"
 requires-python = ">=3.10"
 dependencies = [
     "cryptography>=3.1",
@@ -12,13 +12,22 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-huggingface>=1.2.1",
     "langchain-openai>=1.1.12",
-    "llm-factory>=0.0.3.1",
+    "langchain-classic>=1.0.1",
+    "mineru[pipeline]>=3.1.0",
+    "numpy>=1.24.0",
     "pandas>=2.3.3",
     "path>=17.1.1",
-    "pymilvus>=2.6.12",
     "pypdf>=6.10.0",
     "python-dotenv>=1.2.2",
     "ragas>=0.4.3",
     "rank-bm25>=0.2.2",
     "sentence-transformers>=5.4.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.20",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]

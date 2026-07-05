@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Research Retrieval Workbench</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="rail">
+        <section class="brand">
+          <div class="brand-mark">R</div>
+          <div>
+            <h1>Paper Workbench</h1>
+            <p>evidence-first retrieval</p>
+          </div>
+        </section>
+
+        <section class="upload-zone">
+          <label class="file-picker">
+            <input id="fileInput" type="file" multiple />
+            <span>Upload papers</span>
+          </label>
+          <button id="uploadBtn" class="command">Start ingest</button>
+          <button id="rebuildBtn" class="ghost">Rebuild data/</button>
+          <div id="jobStatus" class="job-status">No active job</div>
+        </section>
+
+        <section class="corpus-head">
+          <h2>Corpus</h2>
+          <button id="refreshBtn" class="icon-btn" title="Refresh corpus" aria-label="Refresh corpus">↻</button>
+        </section>
+        <div id="stats" class="stats-grid"></div>
+        <nav id="documentList" class="doc-list"></nav>
+      </aside>
+
+      <section class="workspace">
+        <section class="query-panel">
+          <div class="panel-title">
+            <div>
+              <h2>Research topic screening</h2>
+              <p>Rank papers by topic fit, contribution, method, findings, and limitations.</p>
+            </div>
+            <input id="limitInput" class="limit-input" type="number" min="1" max="50" value="10" />
+          </div>
+          <textarea id="topicInput" placeholder="输入研究主题，例如：新能源汽车负面口碑如何影响消费者购买意愿"></textarea>
+          <div class="actions">
+            <button id="screenBtn" class="command">Screen papers</button>
+            <button id="queryBtn" class="ghost">Ask corpus</button>
+          </div>
+        </section>
+
+        <section class="results-band">
+          <div class="tabs">
+            <button class="tab active" data-tab="screen">Screening</button>
+            <button class="tab" data-tab="answer">Answer</button>
+          </div>
+          <div id="screenResults" class="result-list"></div>
+          <div id="answerResults" class="answer-view hidden"></div>
+        </section>
+      </section>
+
+      <aside class="detail">
+        <section class="detail-head">
+          <h2>Evidence</h2>
+          <p id="detailHint">Select a paper or citation.</p>
+        </section>
+        <div id="detailContent" class="detail-content"></div>
+      </aside>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

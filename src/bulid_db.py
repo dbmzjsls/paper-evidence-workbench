@@ -1,33 +1,59 @@
-import os
-import pickle
-from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from src.config import Config
+"""
+Backward-compatible shim for the historical misspelled module name.
 
-def build_and_save_db():
-    loader = PyPDFDirectoryLoader(Config.DATA_DIR)
-    raw_docs = loader.load()
+New code should import from src.indexing.
+"""
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=Config.CHUNK_SIZE, chunk_overlap=Config.CHUNK_OVERLAP)
-    docs = splitter.split_documents(raw_docs)
+from __future__ import annotations
 
-    print(f"共加载 {len(raw_docs)} 页，分割为 {len(docs)} 个文本块")
+import hashlib
 
-    print("正在初始化 Embeddings 模型...")
-    embeddings = HuggingFaceEmbeddings(model_name=Config.EMBEDDING_MODEL)
+from langchain_core.documents import Document
 
-    print("正在构建 FAISS 向量库...")
-    vectorstore = FAISS.from_documents(docs, embeddings)
+from src.indexing import IndexingService, build_and_save_db, get_db_stats
+from src.models import ContentElement, PaperDocument, ParsedDocument, utc_now_iso
+from src.parsers.base import clean_text, document_id_from_hash
 
-    os.makedirs(os.path.dirname(Config.VECTOR_DIR), exist_ok=True)
-    vectorstore.save_local(Config.VECTOR_DIR)
 
-    with open(Config.DOCS_DIR, 'wb') as f:
-        pickle.dump(docs, f)
+def add_documents(new_docs: list[Document], embedding_model=None):
+    """
+    Compatibility helper for older callers that already hold LangChain documents.
+    Documents are stored as a synthetic imported corpus, then the FAISS index is rebuilt.
+    """
+    service = IndexingService()
+    imported = []
+    for idx, doc in enumerate(new_docs, 1):
+        source = str(doc.metadata.get("source", f"imported-{idx}"))
+        digest = hashlib.sha256()
+        digest.update(source.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+        digest.update(doc.page_content.encode("utf-8", errors="replace"))
+        sha256 = digest.hexdigest()
+        document_id = document_id_from_hash(sha256)
+        document = PaperDocument(
+            document_id=document_id,
+            source_path=source,
+            filename=source.split("\\")[-1].split("/")[-1],
+            file_type="imported",
+            title=doc.metadata.get("title") or source,
+            sha256=sha256,
+            parser="langchain-import",
+            created_at=utc_now_iso(),
+            updated_at=utc_now_iso(),
+            metadata=dict(doc.metadata),
+        )
+        element = ContentElement(
+            element_id=f"{document.document_id}_el_000001",
+            document_id=document.document_id,
+            sequence=1,
+            type="text",
+            text=clean_text(doc.page_content),
+            page_idx=doc.metadata.get("page"),
+            metadata=dict(doc.metadata),
+        )
+        imported.append(ParsedDocument(document=document, elements=[element], assets=[]))
 
-    print("数据库构建完成!")
-
-if __name__ == "__main__":
-    build_and_save_db()
+    for parsed in imported:
+        service.save_parsed_document(parsed)
+    service.rebuild_vector_index()
+    return {"status": "ready", "imported": len(imported)}
