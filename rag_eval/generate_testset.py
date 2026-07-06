@@ -1,9 +1,13 @@
-import os, sys, json, random
+import json
+import os
+import pickle
+import random
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.rag_chain import get_llm_only
 from src.config import Config
-import pickle
+from src.rag_chain import get_llm_only
 
 def generate_qa_from_chunks(n_questions=15):
     """从文档库中随机抽取 chunk，让 LLM 生成提问和简答"""

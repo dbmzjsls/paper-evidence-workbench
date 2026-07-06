@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from src.config import Config
 from src.indexing import IndexingService, get_db_stats
@@ -52,7 +53,7 @@ def main():
         return
 
     if args.command == "query":
-        result = ResearchRAG().answer(args.question, mode=args.mode)
+        result = _answer_or_exit(args.question, mode=args.mode)
         print(json.dumps(_dump(result), ensure_ascii=False, indent=2))
         return
 
@@ -78,7 +79,7 @@ def main():
             return
 
     if args.question:
-        result = ResearchRAG().answer(args.question, mode=args.mode)
+        result = _answer_or_exit(args.question, mode=args.mode)
         print(result.answer)
         if result.citations:
             print("\nCitations:")
@@ -88,6 +89,14 @@ def main():
         return
 
     parser.print_help()
+
+
+def _answer_or_exit(question: str, mode: str):
+    try:
+        return ResearchRAG().answer(question, mode=mode)
+    except Exception as exc:
+        print(f"查询失败: {exc}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def _dump(model_or_dict):
