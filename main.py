@@ -95,7 +95,7 @@ def _answer_or_exit(question: str, mode: str):
     try:
         return ResearchRAG().answer(question, mode=mode)
     except Exception as exc:
-        print(f"查询失败: {exc}", file=sys.stderr)
+        print(f"Query failed: {exc}", file=sys.stderr)
         raise SystemExit(1)
 
 

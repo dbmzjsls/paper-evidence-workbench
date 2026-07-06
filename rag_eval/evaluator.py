@@ -114,6 +114,7 @@ def evaluate_with_ragas(
                 scores.append(score)
                 metric_scores_by_sample[sample_index][metric_name] = score
             except Exception:
+                scores.append(0.0)
                 metric_scores_by_sample[sample_index][metric_name] = None
         avg = round(sum(scores) / len(scores), 4) if scores else 0.0
         results["metrics"][metric_name] = avg
