@@ -20,6 +20,7 @@ from langchain_openai import ChatOpenAI
 
 from src.config import Config
 from src.rag_chain import get_retriever_only, get_llm_only
+from rag_eval.prompts import format_generation_prompt
 
 
 def _build_eval_llm():
@@ -28,7 +29,7 @@ def _build_eval_llm():
         ChatOpenAI(
             api_key=Config.get_api_key(),
             base_url=Config.DASHSCOPE_BASE_URL,
-            model=Config.llm_eval,
+            model=Config.LLM_EVAL,
             temperature=0, # 保障评估一致性
         )
     )
@@ -39,7 +40,7 @@ def _build_eval_embeddings():
     return LangchainEmbeddingsWrapper(
         HuggingFaceEmbeddings(
             model_name=Config.EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
+            model_kwargs={"device": Config.EMBEDDING_DEVICE},
         )
     )
 
@@ -81,13 +82,9 @@ def evaluate_with_ragas(
             contexts = [doc.page_content for doc in retrieved_docs]
 
             # 第2步: 生成 — 基于检索到的 contexts
-            prompt = (
-                "请根据以下背景信息回答用户问题。"
-                "如果背景信息中无法得出答案，请明确说明。\n\n"
-                f"背景信息：\n{chr(10).join(contexts)}\n\n"
-                f"用户问题：{q}\n\n回答："
-            )
-            answer = llm.invoke(prompt).content
+            prompt = format_generation_prompt(q, contexts)
+            response = llm.invoke(prompt)
+            answer = response.content if hasattr(response, "content") else str(response)
 
             # 第3步: 构建 RAGAS 样本 — contexts 来自检索器
             sample = SingleTurnSample(
@@ -107,30 +104,30 @@ def evaluate_with_ragas(
     # 第4步: 逐指标计算得分
     results = {"mode": mode, "metrics": {}, "samples_detail": [], "n_samples": len(samples)}
 
+    metric_scores_by_sample = [dict() for _ in samples]
+
     for metric_name, metric_fn in metrics_map.items():
         scores = []
-        for sample in samples:
+        for sample_index, sample in enumerate(samples):
             try:
-                scores.append(float(metric_fn.single_turn_score(sample)))
+                score = float(metric_fn.single_turn_score(sample))
+                scores.append(score)
+                metric_scores_by_sample[sample_index][metric_name] = score
             except Exception:
                 scores.append(0.0)
-        avg = round(sum(scores) / len(scores), 4)
+                metric_scores_by_sample[sample_index][metric_name] = None
+        avg = round(sum(scores) / len(scores), 4) if scores else 0.0
         results["metrics"][metric_name] = avg
         if verbose:
             print(f"  {metric_name}: {avg:.4f}")
 
     # 逐样本明细
-    for sample in samples:
+    for i, sample in enumerate(samples):
         detail = {
             "question": sample.user_input[:80],
             "n_contexts": len(sample.retrieved_contexts),
-            "scores": {},
+            "scores": metric_scores_by_sample[i],
         }
-        for metric_name, metric_fn in metrics_map.items():
-            try:
-                detail["scores"][metric_name] = float(metric_fn.single_turn_score(sample))
-            except Exception:
-                detail["scores"][metric_name] = None
         results["samples_detail"].append(detail)
 
     return results
