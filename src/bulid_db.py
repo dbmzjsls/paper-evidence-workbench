@@ -15,6 +15,9 @@ from src.models import ContentElement, PaperDocument, ParsedDocument, utc_now_is
 from src.parsers.base import clean_text, document_id_from_hash
 
 
+__all__ = ["add_documents", "build_and_save_db", "get_db_stats"]
+
+
 def add_documents(new_docs: list[Document], embedding_model=None):
     """
     Compatibility helper for older callers that already hold LangChain documents.

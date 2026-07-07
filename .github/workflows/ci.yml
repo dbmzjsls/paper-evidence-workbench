@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Tests, lint, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UV_LINK_MODE: copy
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        id: sync
+        run: uv sync --frozen --group dev
+
+      - name: Lint
+        if: ${{ steps.sync.outcome == 'success' }}
+        run: uv run ruff check --output-format=github .
+
+      - name: Run tests
+        if: ${{ always() && steps.sync.outcome == 'success' }}
+        run: |
+          mkdir -p reports
+          uv run python -m pytest tests -q --junitxml=reports/pytest.xml
+
+      - name: Build package
+        if: ${{ always() && steps.sync.outcome == 'success' }}
+        run: uv build
+
+      - name: Upload pytest report
+        if: ${{ always() && hashFiles('reports/pytest.xml') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: reports/pytest.xml
+
+      - name: Upload build artifacts
+        if: ${{ always() && hashFiles('dist/*') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/*
+
+      - name: Summarize checks
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## CI checks"
+            echo ""
+            echo "- Lint: \`uv run ruff check --output-format=github .\` (GitHub annotations)"
+            echo "- Tests: \`uv run python -m pytest tests -q --junitxml=reports/pytest.xml\` (uploaded as \`pytest-report\`)"
+            echo "- Build: \`uv build\` (uploaded as \`python-package\` when successful)"
+          } >> "$GITHUB_STEP_SUMMARY"

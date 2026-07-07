@@ -10,7 +10,7 @@ from src.retrieval import ResearchRAG
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Research paper retrieval workbench")
+    parser = argparse.ArgumentParser(description="Paper Evidence Workbench")
     parser.add_argument("--question", "-q", help="Backward-compatible one-shot query")
     parser.add_argument("--stats", action="store_true", help="Show corpus stats")
     parser.add_argument("--rebuild", action="store_true", help="Rebuild corpus from data dir")

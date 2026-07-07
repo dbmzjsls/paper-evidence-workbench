@@ -1,5 +1,5 @@
 """
-Compatibility facade for the research-paper RAG service.
+Compatibility facade for the Paper Evidence Workbench retrieval service.
 
 New code should use src.retrieval.ResearchRAG directly.
 """

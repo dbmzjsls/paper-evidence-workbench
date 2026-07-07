@@ -10,6 +10,12 @@
 
 # Python 缓存
 __pycache__/
+.pytest_cache/
+
+# Python 构建产物
+build/
+dist/
+*.egg-info/
 
 # 本地数据 & 向量库
 data/
@@ -22,3 +28,7 @@ rag_eval/generated_qa.json
 # 评测数据集 & 实验结果
 evals/
 experiments/
+
+# 本地学习笔记
+paper_evidence_learning/
+rerank_learning/

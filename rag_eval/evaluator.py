@@ -5,7 +5,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ragas.dataset_schema import SingleTurnSample, EvaluationDataset
+from ragas.dataset_schema import SingleTurnSample
 from ragas.metrics import (
     Faithfulness,
     AnswerRelevancy,

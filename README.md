@@ -1,6 +1,6 @@
-# Research Paper Retrieval Workbench
+# Paper Evidence Workbench
 
-带 Web 工作台的科研论文增强检索系统。V1 支持导入 PDF、DOCX、PPTX、XLSX、图片、TXT、Markdown、HTML、CSV，保留文本、表格、图片、公式等证据块，并基于研究主题生成可追溯的论文筛选报告。
+面向科研论文的证据检索与筛选工作台。V1 支持导入 PDF、DOCX、PPTX、XLSX、图片、TXT、Markdown、HTML、CSV，保留文本、表格、图片、公式等证据块，并基于研究主题生成可追溯的论文筛选报告。
 
 ## What Changed
 

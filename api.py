@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Research Paper Retrieval Workbench",
+    title="Paper Evidence Workbench",
     description="Evidence-grounded paper ingestion, retrieval, and screening.",
     version="1.0.0",
     lifespan=lifespan,
@@ -73,12 +73,12 @@ async def index():
     index_path = Path(Config.WEB_DIR) / "index.html"
     if index_path.exists():
         return FileResponse(index_path)
-    return {"service": "research-paper-retrieval", "web": "not_built"}
+    return {"service": "paper-evidence-workbench", "web": "not_built"}
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "research-paper-retrieval"}
+    return {"status": "ok", "service": "paper-evidence-workbench"}
 
 
 @app.get("/stats")
