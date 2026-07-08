@@ -1,33 +1,40 @@
 # Paper Evidence Workbench
 
-面向科研论文的证据检索与筛选工作台。V1 支持导入 PDF、DOCX、PPTX、XLSX、图片、TXT、Markdown、HTML、CSV，保留文本、表格、图片、公式等证据块，并基于研究主题生成可追溯的论文筛选报告。
+面向科研论文的证据检索与筛选工作台。支持导入 PDF、DOCX、PPTX、XLSX、图片、TXT、Markdown、HTML、CSV 等多格式文档，通过 MinerU 进行结构化解析，提取文本、表格、图片、公式等证据块，并基于研究主题生成可追溯的论文筛选报告。
 
-## What Changed
+## 架构概览
 
-- MinerU 3.x 输出适配：优先读取 `*_content_list_v2.json`，回退到 `*_content_list.json` 和 Markdown。
-- SQLite 成为语料库事实层：保存 documents、elements、chunks、assets、jobs、reports。
-- FAISS 只负责向量索引；旧 `docs.pkl` 仅保留兼容。
-- 查询和筛选都会返回 citations 和 contexts，回答不再是无出处文本。
-- FastAPI 直接服务 `web/` 静态工作台。
+```
+data/                          # 原始论文文件（不入 git）
+  └── _uploads/                # API 上传暂存
+src/
+  ├── config.py                # 全局配置（环境变量 + 默认值）
+  ├── models.py                # Pydantic 数据模型
+  ├── storage.py               # SQLite + FTS5 全文检索语料库
+  ├── indexing.py              # 文档导入 → 解析 → 分块 → FAISS 向量索引
+  ├── evidence.py              # 将解析元素构建为证据块
+  ├── retrieval.py             # 混合检索 + LLM 问答 + 论文筛选
+  ├── rag_chain.py             # LangChain 兼容适配层
+  ├── parser.py                # MinerU 旧版兼容包装
+  ├── bulid_db.py              # 旧版兼容 shim（注意：文件名拼写为历史遗留）
+  └── parsers/
+      ├── base.py              # 解析器基类 + 通用工具
+      ├── mineru.py            # MinerU 结构化解析
+      └── plain.py             # 纯文本/Markdown/HTML/CSV 解析
+api.py                         # FastAPI Web 服务
+main.py                        # CLI 入口
+rag_eval/                      # RAGAS 评测
+tests/                         # pytest 测试
+web/                           # 前端静态文件
+```
 
-## Setup
+## 快速开始
 
 ```bash
+# 安装依赖
 uv sync --group dev
-```
 
-如需 LLM 生成式回答，配置：
-
-```env
-DASHSCOPE_API_KEY=your_key
-```
-
-无 API key 时，系统仍可执行导入、关键词/向量检索、抽取式回答和论文筛选。
-
-## CLI
-
-```bash
-# 导入 data/ 目录下所有支持文件
+# 导入 data/ 目录下所有论文
 uv run python main.py ingest --path data/
 
 # 查看语料库状态
@@ -40,63 +47,78 @@ uv run python main.py query "新能源汽车负面口碑如何影响购买意愿
 uv run python main.py screen "新能源汽车负面口碑与购买意愿" --limit 10
 ```
 
-旧用法仍可用：
-
-```bash
-uv run python main.py --question "你的问题"
-uv run python main.py --stats
-```
-
-## Web API
-
-启动：
+### 启动 Web API
 
 ```bash
 uv run uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-打开：
+打开 http://localhost:8000 使用 Web 工作台。
 
-```text
-http://localhost:8000
-```
+### 主要 API 接口
 
-主要接口：
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/documents/upload` | 多文件上传，返回 `job_id` |
+| `GET` | `/jobs/{job_id}` | 查询导入进度 |
+| `GET` | `/documents` | 论文列表 |
+| `GET` | `/documents/{id}` | 论文详情（含元素、资源、分块） |
+| `POST` | `/query` | 证据问答，返回 `answer` + `citations` |
+| `POST` | `/screen` | 按研究主题筛选论文 |
+| `POST` | `/documents/rebuild` | 重建语料库 |
+| `POST` | `/documents/reindex` | 从 SQLite 重建 FAISS 索引 |
 
-- `POST /documents/upload`：多文件上传，返回 `job_id`
-- `GET /jobs/{job_id}`：查看解析/索引进度
-- `GET /documents`、`GET /documents/{document_id}`：查看论文和证据
-- `POST /query`：返回 `answer`、`citations`、`contexts`
-- `POST /screen`：按研究主题生成论文筛选报告
-- `POST /documents/rebuild`：重建 `data/` 语料库
-- `POST /documents/reindex`：从 SQLite chunks 重建 FAISS
+## 配置
 
-## Configuration
+在 `.env` 文件中配置（参考下方环境变量）。无 API key 时，系统仍可执行导入、关键词/向量检索和抽取式回答。
 
-常用环境变量：
+### 必需配置
 
 ```env
+DASHSCOPE_API_KEY=your_key    # LLM 生成式问答所需（可选，无 key 时回退到抽取式回答）
+```
+
+### 常用可选配置
+
+```env
+# 路径
 PAPER_STORAGE_DIR=./data
-PARSED_DIR=./data/parsed
-ASSET_DIR=./data/assets
 SQLITE_PATH=./vectorstore/paper_corpus.sqlite3
-MINERU_BACKEND=pipeline
-MINERU_METHOD=auto
+
+# MinerU 解析
+MINERU_BACKEND=pipeline        # pipeline | hybrid | vlm
 MINERU_LANG=ch
 MINERU_FORMULA=true
 MINERU_TABLE=true
+
+# 行为
 AUTO_INGEST_ON_STARTUP=false
-CORS_ALLOW_ORIGINS=*
-CORS_ALLOW_CREDENTIALS=false
-TRUST_LOCAL_FAISS_INDEX=false
+TRUST_LOCAL_FAISS_INDEX=false  # 启用向量检索前需设为 true
 KEYWORD_CANDIDATE_LIMIT=500
+
+# CORS
+CORS_ALLOW_ORIGINS=*
 ```
 
-默认 MinerU 后端为 CPU 友好的 `pipeline`。更高精度的 hybrid/VLM 后端可以通过环境变量切换。
-默认不加载未经显式信任的本地 FAISS pickle 索引；需要启用向量索引检索时，请确认索引文件来自本机可信构建流程后设置 `TRUST_LOCAL_FAISS_INDEX=true`。
-
-## Tests
+## 运行测试
 
 ```bash
 uv run --group dev python -m pytest tests -q
 ```
+
+## 技术栈
+
+- **文档解析**：MinerU 3.x (pipeline 后端)，支持 PDF/DOCX/PPTX/XLSX/图片
+- **语料存储**：SQLite + FTS5 全文搜索
+- **向量索引**：FAISS (HNSW) + sentence-transformers 嵌入
+- **检索策略**：向量检索 + 关键词检索混合排序
+- **LLM**：DashScope (通义千问) 兼容 OpenAI API
+- **Web**：FastAPI + 静态前端
+- **评测**：RAGAS
+
+## 已知限制
+
+- Rerank 模型（`BAAI/bge-reranker-base`）已配置但检索流程中尚未集成 cross-encoder 重排序
+- `Config` 中部分索引参数（HNSW 配置、语义分块等）已定义但未在 FAISS 构建时使用，FAISS 使用 langchain 默认参数
+- 旧版兼容模块（`src/bulid_db.py`、`src/parser.py`、`src/rag_chain.py`）依赖内部私有 API，重构时需注意
+- 无日志系统，解析/检索异常静默处理，排查问题不便

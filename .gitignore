@@ -29,6 +29,9 @@ rag_eval/generated_qa.json
 evals/
 experiments/
 
+# 问题清单（本地参考，不入仓库）
+ISSUES.md
+
 # 本地学习笔记
 paper_evidence_learning/
 rerank_learning/
