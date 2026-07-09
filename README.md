@@ -34,6 +34,9 @@ web/                           # 前端静态文件
 # 安装依赖
 uv sync --group dev
 
+# 初始化本地环境配置
+cp .env.example .env
+
 # 导入 data/ 目录下所有论文
 uv run python main.py ingest --path data/
 
@@ -70,7 +73,7 @@ uv run uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 
 ## 配置
 
-在 `.env` 文件中配置（参考下方环境变量）。无 API key 时，系统仍可执行导入、关键词/向量检索和抽取式回答。
+复制 `.env.example` 为 `.env` 后按需调整。无 API key 时，系统仍可执行导入、关键词/向量检索和抽取式回答。
 
 ### 必需配置
 
