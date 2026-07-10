@@ -98,6 +98,9 @@ MINERU_TABLE=true
 AUTO_INGEST_ON_STARTUP=false
 TRUST_LOCAL_FAISS_INDEX=false  # 启用向量检索前需设为 true
 KEYWORD_CANDIDATE_LIMIT=500
+ENABLE_RERANK=false
+RERANK_MODEL=BAAI/bge-reranker-base
+RERANK_CANDIDATE_LIMIT=50
 
 # CORS
 CORS_ALLOW_ORIGINS=*
@@ -121,7 +124,7 @@ uv run --group dev python -m pytest tests -q
 
 ## 已知限制
 
-- Rerank 模型（`BAAI/bge-reranker-base`）已配置但检索流程中尚未集成 cross-encoder 重排序
+- Rerank 模型已集成到混合检索候选集重排序；设置 `ENABLE_RERANK=true` 后会加载 `RERANK_MODEL`，如模型不可用会自动回退到原混合排序
 - `Config` 中部分索引参数（HNSW 配置、语义分块等）已定义但未在 FAISS 构建时使用，FAISS 使用 langchain 默认参数
 - 旧版兼容模块（`src/bulid_db.py`、`src/parser.py`、`src/rag_chain.py`）依赖内部私有 API，重构时需注意
 - 无日志系统，解析/检索异常静默处理，排查问题不便

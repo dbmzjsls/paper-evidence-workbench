@@ -140,7 +140,9 @@ class Config:
     EMBEDDING_BATCH_SIZE: int = 32  # 批量嵌入大小
 
     # ========== 重排序模型 ==========
-    RERANK_MODEL: str = "BAAI/bge-reranker-base"
+    ENABLE_RERANK: bool = _env_bool("ENABLE_RERANK", False)
+    RERANK_MODEL: str = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
+    RERANK_CANDIDATE_LIMIT: int = _env_int("RERANK_CANDIDATE_LIMIT", 50)
 
     # ========== 检索配置 ==========
     RETRIEVER_K: int = 5  # 最终返回文档数
@@ -149,7 +151,7 @@ class Config:
     KEYWORD_CANDIDATE_LIMIT: int = _env_int("KEYWORD_CANDIDATE_LIMIT", 500)
     TRUST_LOCAL_FAISS_INDEX: bool = _env_bool("TRUST_LOCAL_FAISS_INDEX", False)
     ENSEMBLE_WEIGHTS: list = [0.4, 0.6]  # [BM25权重, 向量权重]
-    TOP_N: int = 2  # Rerank 后保留
+    TOP_N: int = 2  # 旧版兼容配置，检索结果数量由调用方 k 控制
 
     # ========== LLM 配置 ==========
     LLM_MODEL: str = "glm-5"

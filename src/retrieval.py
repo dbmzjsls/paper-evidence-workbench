@@ -27,6 +27,8 @@ class ResearchRAG:
     def __init__(self, storage: CorpusStorage | None = None):
         self.storage = storage or CorpusStorage()
         self._vectorstore = None
+        self._reranker = None
+        self._reranker_unavailable = False
 
     def retrieve(
         self,
@@ -69,11 +71,13 @@ class ResearchRAG:
             return []
 
         ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-        return [
+        candidate_count = max(k, min(len(ranked), Config.RERANK_CANDIDATE_LIMIT))
+        candidates = [
             RetrievedEvidence(chunk=by_id[chunk_id], score=score)
-            for chunk_id, score in ranked[:k]
+            for chunk_id, score in ranked[:candidate_count]
             if chunk_id in by_id
         ]
+        return self._rerank(query, candidates)[:k]
 
     def answer(self, question: str, mode: str = "ensemble") -> QueryResult:
         retrieved = self.retrieve(question, k=Config.RETRIEVAL_CONTEXTS)
@@ -199,6 +203,52 @@ class ResearchRAG:
                 allow_dangerous_deserialization=Config.TRUST_LOCAL_FAISS_INDEX,
             )
         return self._vectorstore
+
+    def _rerank(
+        self,
+        query: str,
+        candidates: list[RetrievedEvidence],
+    ) -> list[RetrievedEvidence]:
+        if len(candidates) < 2 or not Config.ENABLE_RERANK or not Config.RERANK_MODEL:
+            return candidates
+        try:
+            rerank_scores = self._rerank_scores(
+                query,
+                [candidate.chunk.search_text or candidate.chunk.text for candidate in candidates],
+            )
+        except Exception:
+            return candidates
+        if len(rerank_scores) != len(candidates):
+            return candidates
+
+        rescored: list[RetrievedEvidence] = []
+        for candidate, rerank_score in zip(candidates, rerank_scores):
+            # Keep a small contribution from the hybrid score for deterministic tie-breaking.
+            score = float(rerank_score) + (candidate.score * 0.001)
+            rescored.append(RetrievedEvidence(chunk=candidate.chunk, score=score))
+        return sorted(rescored, key=lambda item: item.score, reverse=True)
+
+    def _rerank_scores(self, query: str, passages: list[str]) -> list[float]:
+        reranker = self._load_reranker()
+        pairs = [[query, passage] for passage in passages]
+        scores = reranker.predict(pairs)
+        return [float(score) for score in scores]
+
+    def _load_reranker(self):
+        if self._reranker_unavailable:
+            raise RuntimeError("Reranker is unavailable")
+        if self._reranker is None:
+            try:
+                from sentence_transformers import CrossEncoder
+
+                self._reranker = CrossEncoder(
+                    Config.RERANK_MODEL,
+                    device=Config.EMBEDDING_DEVICE,
+                )
+            except Exception as exc:
+                self._reranker_unavailable = True
+                raise RuntimeError("Unable to load reranker") from exc
+        return self._reranker
 
     def _keyword_scores(self, query: str, chunks: list[EvidenceChunk]) -> dict[str, float]:
         raw_scores = {

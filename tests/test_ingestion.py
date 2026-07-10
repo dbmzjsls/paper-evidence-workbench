@@ -191,6 +191,75 @@ def test_storage_bare_sqlite_path_and_limited_search_do_not_require_full_scan(
     assert result.citations
 
 
+def test_retrieve_applies_cross_encoder_rerank(tmp_path, monkeypatch):
+    storage = CorpusStorage(str(tmp_path / "corpus.sqlite3"))
+    service = IndexingService(storage=storage, build_vectors=False)
+
+    first_doc = PaperDocument(
+        document_id="doc_first",
+        source_path=str(tmp_path / "first.md"),
+        filename="first.md",
+        file_type="md",
+        title="First Paper",
+        sha256="c" * 64,
+        parser="test",
+        created_at=utc_now_iso(),
+        updated_at=utc_now_iso(),
+    )
+    second_doc = PaperDocument(
+        document_id="doc_second",
+        source_path=str(tmp_path / "second.md"),
+        filename="second.md",
+        file_type="md",
+        title="Second Paper",
+        sha256="d" * 64,
+        parser="test",
+        created_at=utc_now_iso(),
+        updated_at=utc_now_iso(),
+    )
+    service.save_parsed_document(
+        ParsedDocument(
+            document=first_doc,
+            elements=[
+                ContentElement(
+                    element_id="doc_first_el_000001",
+                    document_id=first_doc.document_id,
+                    sequence=1,
+                    type="text",
+                    text=clean_text("purchase intention is mentioned briefly"),
+                )
+            ],
+        )
+    )
+    service.save_parsed_document(
+        ParsedDocument(
+            document=second_doc,
+            elements=[
+                ContentElement(
+                    element_id="doc_second_el_000001",
+                    document_id=second_doc.document_id,
+                    sequence=1,
+                    type="text",
+                    text=clean_text(
+                        "purchase intention is explained with stronger behavioral evidence"
+                    ),
+                )
+            ],
+        )
+    )
+
+    def fake_rerank_scores(_self, _query, passages):
+        return [10.0 if "stronger behavioral evidence" in passage else 1.0 for passage in passages]
+
+    monkeypatch.setattr(Config, "ENABLE_RERANK", True)
+    monkeypatch.setattr(Config, "RERANK_MODEL", "mock-reranker")
+    monkeypatch.setattr(ResearchRAG, "_rerank_scores", fake_rerank_scores)
+
+    results = ResearchRAG(storage=storage).retrieve("purchase intention", k=2)
+
+    assert [item.chunk.document_id for item in results] == ["doc_second", "doc_first"]
+
+
 def test_legacy_add_documents_uses_stable_digest(tmp_path, monkeypatch):
     db_path = tmp_path / "legacy.sqlite3"
     monkeypatch.setattr(Config, "SQLITE_PATH", str(db_path))
