@@ -167,8 +167,8 @@ async def upload_documents(
 
 @app.post("/documents/ingest")
 async def ingest_path(req: IngestPathRequest, background_tasks: BackgroundTasks):
-    target = Path(req.path)
-    if not target.exists():
+    target = _allowed_ingest_path(req.path)
+    if target is None:
         raise HTTPException(status_code=404, detail="Path not found")
     if target.is_dir() and not discover_files(target, recursive=req.recursive):
         raise HTTPException(status_code=400, detail="No supported files found")
@@ -233,6 +233,28 @@ def _safe_filename(name: str) -> str:
     name = Path(name).name
     name = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", name)
     return name[:180] or "upload"
+
+
+def _allowed_ingest_path(raw_path: str) -> Path | None:
+    try:
+        target = Path(raw_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+    allowed_roots = [
+        Path(Config.DATA_DIR).expanduser().resolve(),
+        Path(Config.UPLOAD_DIR).expanduser().resolve(),
+    ]
+    for root in allowed_roots:
+        try:
+            target.relative_to(root)
+            return target
+        except ValueError:
+            continue
+    raise HTTPException(
+        status_code=403,
+        detail="Path ingestion is restricted to the configured data and upload directories",
+    )
 
 
 if __name__ == "__main__":

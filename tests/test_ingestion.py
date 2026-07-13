@@ -288,6 +288,7 @@ def test_legacy_add_documents_uses_stable_digest(tmp_path, monkeypatch):
 def test_stats_distinguishes_empty_stale_and_ready_index(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "VECTOR_DIR", str(tmp_path / "vectors"))
     monkeypatch.setattr(Config, "DOCS_DIR", str(tmp_path / "docs.pkl"))
+    monkeypatch.setattr(Config, "TRUST_LOCAL_FAISS_INDEX", False)
     storage = CorpusStorage(str(tmp_path / "corpus.sqlite3"))
     service = IndexingService(storage=storage, build_vectors=False)
 
@@ -324,7 +325,10 @@ def test_stats_distinguishes_empty_stale_and_ready_index(tmp_path, monkeypatch):
         json.dumps({"chunk_count": storage.stats()["chunk_count"]}),
         encoding="utf-8",
     )
-    assert service.stats()["status"] == "ready"
+    stats = service.stats()
+    assert stats["status"] == "ready"
+    assert stats["vector_search_enabled"] is False
+    assert "vector search is disabled" in stats["vector_search_warning"]
 
 
 def test_faiss_loading_requires_trusted_local_index(tmp_path, monkeypatch):
@@ -355,3 +359,98 @@ def test_upload_rejects_unsupported_batch_without_partial_files(tmp_path, monkey
 
     assert response.status_code == 400
     assert list((tmp_path / "uploads").iterdir()) == []
+
+
+def test_path_ingest_rejects_files_outside_allowed_roots(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    upload_dir = data_dir / "_uploads"
+    outside_dir = tmp_path / "outside"
+    data_dir.mkdir()
+    upload_dir.mkdir()
+    outside_dir.mkdir()
+    outside_file = outside_dir / "private.md"
+    outside_file.write_text("# private", encoding="utf-8")
+
+    monkeypatch.setattr(Config, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(Config, "UPLOAD_DIR", str(upload_dir))
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/documents/ingest",
+        json={"path": str(outside_file), "recursive": True, "rebuild": False},
+    )
+
+    assert response.status_code == 403
+
+
+def test_retrieve_modes_use_distinct_sources(tmp_path, monkeypatch):
+    storage = CorpusStorage(str(tmp_path / "corpus.sqlite3"))
+    service = IndexingService(storage=storage, build_vectors=False)
+
+    keyword_doc = PaperDocument(
+        document_id="doc_keyword",
+        source_path=str(tmp_path / "keyword.md"),
+        filename="keyword.md",
+        file_type="md",
+        title="Keyword Paper",
+        sha256="e" * 64,
+        parser="test",
+        created_at=utc_now_iso(),
+        updated_at=utc_now_iso(),
+    )
+    vector_doc = PaperDocument(
+        document_id="doc_vector",
+        source_path=str(tmp_path / "vector.md"),
+        filename="vector.md",
+        file_type="md",
+        title="Vector Paper",
+        sha256="f" * 64,
+        parser="test",
+        created_at=utc_now_iso(),
+        updated_at=utc_now_iso(),
+    )
+    service.save_parsed_document(
+        ParsedDocument(
+            document=keyword_doc,
+            elements=[
+                ContentElement(
+                    element_id="doc_keyword_el_000001",
+                    document_id=keyword_doc.document_id,
+                    sequence=1,
+                    type="text",
+                    text=clean_text("negative reviews affect purchase intention"),
+                )
+            ],
+        )
+    )
+    service.save_parsed_document(
+        ParsedDocument(
+            document=vector_doc,
+            elements=[
+                ContentElement(
+                    element_id="doc_vector_el_000001",
+                    document_id=vector_doc.document_id,
+                    sequence=1,
+                    type="text",
+                    text=clean_text("semantic neighbor chosen by vector search"),
+                )
+            ],
+        )
+    )
+
+    vector_chunk = storage.get_chunks(vector_doc.document_id)[0]
+    monkeypatch.setattr(
+        ResearchRAG,
+        "_vector_rank_scores",
+        lambda _self, _query, k: {vector_chunk.chunk_id: 1.0},
+    )
+
+    rag = ResearchRAG(storage=storage)
+    vector_results = rag.retrieve("negative reviews", k=2, mode="vector")
+    ensemble_results = rag.retrieve("negative reviews", k=2, mode="ensemble")
+
+    assert [item.chunk.document_id for item in vector_results] == ["doc_vector"]
+    assert {item.chunk.document_id for item in ensemble_results} == {
+        "doc_keyword",
+        "doc_vector",
+    }

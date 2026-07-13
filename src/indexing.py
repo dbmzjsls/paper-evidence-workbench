@@ -197,6 +197,7 @@ class IndexingService:
         else:
             status = "ready"
 
+        vector_search_enabled = status == "ready" and Config.TRUST_LOCAL_FAISS_INDEX
         stats.update(
             {
                 "status": status,
@@ -207,6 +208,13 @@ class IndexingService:
                 "embedding_model": Config.EMBEDDING_MODEL,
                 "sqlite_path": Config.SQLITE_PATH,
                 "data_dir": Config.DATA_DIR,
+                "vector_search_enabled": vector_search_enabled,
+                "vector_search_warning": ""
+                if vector_search_enabled or status in {"empty", "not_built"}
+                else (
+                    "Local FAISS index is present but vector search is disabled. "
+                    "Set TRUST_LOCAL_FAISS_INDEX=true only for trusted index files."
+                ),
             }
         )
         return stats
