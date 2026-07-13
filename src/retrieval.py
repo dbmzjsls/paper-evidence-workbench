@@ -34,35 +34,53 @@ class ResearchRAG:
         self,
         query: str,
         k: int | None = None,
+        mode: str = "ensemble",
         include_keywords: list[str] | None = None,
         exclude_keywords: list[str] | None = None,
     ) -> list[RetrievedEvidence]:
         k = k or Config.RETRIEVAL_CONTEXTS
+        mode = self._normalize_mode(mode)
         include_keywords = [kw.strip() for kw in include_keywords or [] if kw.strip()]
         exclude_keywords = [kw.strip() for kw in exclude_keywords or [] if kw.strip()]
+        queries = self._queries_for_mode(query, mode)
 
         candidate_limit = max(k * 20, Config.KEYWORD_CANDIDATE_LIMIT)
-        keyword_candidates = self.storage.search_chunks(
-            query,
-            limit=candidate_limit,
-            include_keywords=include_keywords,
-            exclude_keywords=exclude_keywords,
-        )
+        keyword_candidates: list[EvidenceChunk] = []
+        if mode != "vector":
+            for search_query in queries:
+                keyword_candidates.extend(
+                    self.storage.search_chunks(
+                        search_query,
+                        limit=candidate_limit,
+                        include_keywords=include_keywords,
+                        exclude_keywords=exclude_keywords,
+                    )
+                )
+            keyword_candidates = list(
+                {chunk.chunk_id: chunk for chunk in keyword_candidates}.values()
+            )
         by_id = {chunk.chunk_id: chunk for chunk in keyword_candidates}
         scores: dict[str, float] = {}
 
-        vector_hits = self._vector_rank_scores(query, k=max(k * 4, Config.VECTOR_K))
-        for chunk in self.storage.get_chunks_by_ids(vector_hits.keys()):
-            if self._passes_filters(chunk, include_keywords, exclude_keywords):
-                by_id[chunk.chunk_id] = chunk
+        if mode in {"vector", "ensemble", "rerank", "multiquery"}:
+            for search_query in queries:
+                vector_hits = self._vector_rank_scores(
+                    search_query,
+                    k=max(k * 4, Config.VECTOR_K),
+                )
+                for chunk in self.storage.get_chunks_by_ids(vector_hits.keys()):
+                    if self._passes_filters(chunk, include_keywords, exclude_keywords):
+                        by_id[chunk.chunk_id] = chunk
 
-        for chunk_id, score in vector_hits.items():
-            if chunk_id in by_id:
-                scores[chunk_id] = scores.get(chunk_id, 0.0) + score * 0.65
+                for chunk_id, score in vector_hits.items():
+                    if chunk_id in by_id:
+                        scores[chunk_id] = scores.get(chunk_id, 0.0) + score * 0.65
 
-        keyword_scores = self._keyword_scores(query, keyword_candidates)
-        for chunk_id, score in keyword_scores.items():
-            scores[chunk_id] = scores.get(chunk_id, 0.0) + score * 0.35
+        if mode != "vector":
+            for search_query in queries:
+                keyword_scores = self._keyword_scores(search_query, keyword_candidates)
+                for chunk_id, score in keyword_scores.items():
+                    scores[chunk_id] = scores.get(chunk_id, 0.0) + score * 0.35
 
         if not scores:
             for chunk in by_id.values():
@@ -77,10 +95,10 @@ class ResearchRAG:
             for chunk_id, score in ranked[:candidate_count]
             if chunk_id in by_id
         ]
-        return self._rerank(query, candidates)[:k]
+        return self._rerank(query, candidates, force=mode == "rerank")[:k]
 
     def answer(self, question: str, mode: str = "ensemble") -> QueryResult:
-        retrieved = self.retrieve(question, k=Config.RETRIEVAL_CONTEXTS)
+        retrieved = self.retrieve(question, k=Config.RETRIEVAL_CONTEXTS, mode=mode)
         if not retrieved:
             return QueryResult(
                 question=question,
@@ -107,6 +125,7 @@ class ResearchRAG:
         retrieved = self.retrieve(
             topic,
             k=max(limit * 8, Config.RETRIEVAL_CONTEXTS),
+            mode="ensemble",
             include_keywords=include_keywords,
             exclude_keywords=exclude_keywords,
         )
@@ -208,8 +227,9 @@ class ResearchRAG:
         self,
         query: str,
         candidates: list[RetrievedEvidence],
+        force: bool = False,
     ) -> list[RetrievedEvidence]:
-        if len(candidates) < 2 or not Config.ENABLE_RERANK or not Config.RERANK_MODEL:
+        if len(candidates) < 2 or not (force or Config.ENABLE_RERANK) or not Config.RERANK_MODEL:
             return candidates
         try:
             rerank_scores = self._rerank_scores(
@@ -227,6 +247,23 @@ class ResearchRAG:
             score = float(rerank_score) + (candidate.score * 0.001)
             rescored.append(RetrievedEvidence(chunk=candidate.chunk, score=score))
         return sorted(rescored, key=lambda item: item.score, reverse=True)
+
+    def _normalize_mode(self, mode: str) -> str:
+        normalized = mode.strip().lower()
+        if normalized in {"vector", "ensemble", "rerank", "multiquery"}:
+            return normalized
+        return "ensemble"
+
+    def _queries_for_mode(self, query: str, mode: str) -> list[str]:
+        if mode != "multiquery":
+            return [query]
+        variants = [query]
+        tokens = self._tokens(query)
+        if tokens:
+            variants.append(" ".join(tokens[:8]))
+        if len(tokens) > 3:
+            variants.append(" ".join(reversed(tokens[:8])))
+        return list(dict.fromkeys(item for item in variants if item.strip()))
 
     def _rerank_scores(self, query: str, passages: list[str]) -> list[float]:
         reranker = self._load_reranker()

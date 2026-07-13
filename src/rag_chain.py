@@ -31,7 +31,11 @@ class RetrieverAdapter:
     def invoke(self, question: str):
         from langchain_core.documents import Document
 
-        results = self.service.retrieve(question, k=Config.RETRIEVAL_CONTEXTS)
+        results = self.service.retrieve(
+            question,
+            k=Config.RETRIEVAL_CONTEXTS,
+            mode=self.mode,
+        )
         return [
             Document(
                 page_content=item.chunk.text,
