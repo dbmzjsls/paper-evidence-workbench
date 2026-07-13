@@ -249,8 +249,9 @@ class ResearchRAG:
         return sorted(rescored, key=lambda item: item.score, reverse=True)
 
     def _normalize_mode(self, mode: str) -> str:
-        if mode in {"vector", "ensemble", "rerank", "multiquery"}:
-            return mode
+        normalized = mode.strip().lower()
+        if normalized in {"vector", "ensemble", "rerank", "multiquery"}:
+            return normalized
         return "ensemble"
 
     def _queries_for_mode(self, query: str, mode: str) -> list[str]:

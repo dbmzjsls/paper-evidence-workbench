@@ -319,7 +319,10 @@ def test_stats_distinguishes_empty_stale_and_ready_index(tmp_path, monkeypatch):
     vector_dir = tmp_path / "vectors"
     vector_dir.mkdir()
     (vector_dir / "index.faiss").write_bytes(b"fake")
-    assert service.stats()["status"] == "stale_index"
+    stale_stats = service.stats()
+    assert stale_stats["status"] == "stale_index"
+    assert "stale" in stale_stats["vector_search_warning"]
+    assert "TRUST_LOCAL_FAISS_INDEX" not in stale_stats["vector_search_warning"]
 
     (vector_dir / "metadata.json").write_text(
         json.dumps({"chunk_count": storage.stats()["chunk_count"]}),
@@ -381,6 +384,13 @@ def test_path_ingest_rejects_files_outside_allowed_roots(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 403
+
+    missing_response = client.post(
+        "/documents/ingest",
+        json={"path": str(outside_dir / "missing.md"), "recursive": True, "rebuild": False},
+    )
+    assert missing_response.status_code == 403
+    assert api._allowed_ingest_path("\0") is None
 
 
 def test_retrieve_modes_use_distinct_sources(tmp_path, monkeypatch):
@@ -446,7 +456,7 @@ def test_retrieve_modes_use_distinct_sources(tmp_path, monkeypatch):
     )
 
     rag = ResearchRAG(storage=storage)
-    vector_results = rag.retrieve("negative reviews", k=2, mode="vector")
+    vector_results = rag.retrieve("negative reviews", k=2, mode=" Vector ")
     ensemble_results = rag.retrieve("negative reviews", k=2, mode="ensemble")
 
     assert [item.chunk.document_id for item in vector_results] == ["doc_vector"]

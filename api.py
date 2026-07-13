@@ -237,20 +237,20 @@ def _safe_filename(name: str) -> str:
 
 def _allowed_ingest_path(raw_path: str) -> Path | None:
     try:
-        target = Path(raw_path).expanduser().resolve(strict=True)
-    except (OSError, RuntimeError):
+        target = Path(raw_path).expanduser().resolve(strict=False)
+        allowed_roots = [
+            Path(Config.DATA_DIR).expanduser().resolve(strict=False),
+            Path(Config.UPLOAD_DIR).expanduser().resolve(strict=False),
+        ]
+    except (OSError, RuntimeError, ValueError):
         return None
 
-    allowed_roots = [
-        Path(Config.DATA_DIR).expanduser().resolve(),
-        Path(Config.UPLOAD_DIR).expanduser().resolve(),
-    ]
     for root in allowed_roots:
         try:
             target.relative_to(root)
-            return target
         except ValueError:
             continue
+        return target if target.exists() else None
     raise HTTPException(
         status_code=403,
         detail="Path ingestion is restricted to the configured data and upload directories",

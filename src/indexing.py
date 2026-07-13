@@ -198,6 +198,15 @@ class IndexingService:
             status = "ready"
 
         vector_search_enabled = status == "ready" and Config.TRUST_LOCAL_FAISS_INDEX
+        if status == "stale_index":
+            vector_search_warning = "Local FAISS index is stale. Rebuild the index before vector search."
+        elif status == "ready" and not Config.TRUST_LOCAL_FAISS_INDEX:
+            vector_search_warning = (
+                "Local FAISS index is present but vector search is disabled. "
+                "Set TRUST_LOCAL_FAISS_INDEX=true only for trusted index files."
+            )
+        else:
+            vector_search_warning = ""
         stats.update(
             {
                 "status": status,
@@ -209,12 +218,7 @@ class IndexingService:
                 "sqlite_path": Config.SQLITE_PATH,
                 "data_dir": Config.DATA_DIR,
                 "vector_search_enabled": vector_search_enabled,
-                "vector_search_warning": ""
-                if vector_search_enabled or status in {"empty", "not_built"}
-                else (
-                    "Local FAISS index is present but vector search is disabled. "
-                    "Set TRUST_LOCAL_FAISS_INDEX=true only for trusted index files."
-                ),
+                "vector_search_warning": vector_search_warning,
             }
         )
         return stats
