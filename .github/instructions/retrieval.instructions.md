@@ -1,5 +1,5 @@
 ---
-applyTo: "src/retrieval.py,src/rag_chain.py,src/models.py,rag_eval/**/*.py,tests/**/*.py"
+applyTo: "api.py,main.py,src/config.py,src/retrieval.py,src/rag_chain.py,src/models.py,rag_eval/**/*.py,tests/**/*.py"
 ---
 
 Review retrieval changes for preservation of keyword, vector, and ensemble semantics. Check empty
