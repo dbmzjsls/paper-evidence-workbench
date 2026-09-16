@@ -1,5 +1,5 @@
 ---
-applyTo: "api.py,src/indexing.py,src/storage.py,src/evidence.py,src/parsers/**/*.py,tests/**/*.py"
+applyTo: "api.py,src/indexing.py,src/storage.py,src/evidence.py,src/parser.py,src/bulid_db.py,src/parsers/**/*.py,tests/**/*.py"
 ---
 
 Review ingestion and storage changes as processing of untrusted input. Check upload batch
