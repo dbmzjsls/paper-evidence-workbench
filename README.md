@@ -71,6 +71,12 @@ uv run uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 | `POST` | `/documents/rebuild` | 重建语料库 |
 | `POST` | `/documents/reindex` | 从 SQLite 重建 FAISS 索引 |
 
+### 导入一致性
+
+单篇文档的 `documents`、`elements`、`assets`、`chunks` 和 FTS 更新在同一 SQLite 事务中提交。写入失败会回滚整篇文档；覆盖导入失败会保留旧证据。相同内容通过文件哈希去重，正常重试不会重复写入语料。
+
+缺少 FTS5 模块时仍可导入并使用 LIKE 关键词回退；现有 FTS 写入失败，以及初始化或查询时的锁冲突、I/O、结构错误会向上传播。该事务不覆盖解析资源文件、FAISS、任务记录或整库重建，也不会自动修复历史残缺记录。
+
 ## 配置
 
 复制 `.env.example` 为 `.env` 后按需调整。无 API key 时，系统仍可执行导入、关键词/向量检索和抽取式回答。
@@ -110,6 +116,9 @@ CORS_ALLOW_ORIGINS=*
 
 ```bash
 uv run --group dev python -m pytest tests -q
+
+# 聚焦文档事务、FTS 回退与重试回归
+uv run --group dev python -m pytest tests/test_atomic_ingestion.py -q
 ```
 
 ## 技术栈

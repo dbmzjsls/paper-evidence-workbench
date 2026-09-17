@@ -14,6 +14,7 @@ from src.models import (
     EvidenceChunk,
     IngestionJob,
     PaperDocument,
+    ParsedDocument,
     ScreeningReport,
     model_to_dict,
     utc_now_iso,
@@ -50,6 +51,9 @@ class CorpusStorage:
         try:
             yield conn
             conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -163,14 +167,21 @@ class CorpusStorage:
                 """
             )
             return True
-        except sqlite3.OperationalError:
-            return False
+        except sqlite3.OperationalError as exc:
+            if str(exc).lower() == "no such module: fts5":
+                return False
+            raise
 
     def _delete_fts_document(self, conn: sqlite3.Connection, document_id: str) -> None:
-        try:
+        if self._has_fts(conn):
             conn.execute("DELETE FROM chunks_fts WHERE document_id = ?", (document_id,))
-        except sqlite3.OperationalError:
-            pass
+
+    def _has_fts(self, conn: sqlite3.Connection) -> bool:
+        # An absent optional index is supported; errors in an existing index must
+        # propagate so the surrounding document transaction can roll back.
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'"
+        ).fetchone() is not None
 
     def clear_corpus(self) -> None:
         with self.connect() as conn:
@@ -184,32 +195,43 @@ class CorpusStorage:
             conn.execute("DELETE FROM elements")
             conn.execute("DELETE FROM documents")
 
-    def save_document(self, document: PaperDocument) -> None:
-        data = model_to_dict(document)
+    def save_document_payload(self, parsed: ParsedDocument, chunks: list[EvidenceChunk]) -> None:
+        """Commit a document and its evidence together, preserving old data on failure."""
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO documents (
-                    document_id, source_path, filename, file_type, title, sha256,
-                    parser, status, summary, created_at, updated_at, metadata
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    data["document_id"],
-                    data["source_path"],
-                    data["filename"],
-                    data["file_type"],
-                    data["title"],
-                    data["sha256"],
-                    data["parser"],
-                    data["status"],
-                    data.get("summary", ""),
-                    data["created_at"],
-                    data["updated_at"],
-                    _json(data.get("metadata")),
-                ),
+            self._save_document(conn, parsed.document)
+            self._save_elements(conn, parsed.document.document_id, parsed.elements)
+            self._save_assets(conn, parsed.document.document_id, parsed.assets)
+            self._save_chunks(conn, parsed.document.document_id, chunks)
+
+    def save_document(self, document: PaperDocument) -> None:
+        with self.connect() as conn:
+            self._save_document(conn, document)
+
+    def _save_document(self, conn: sqlite3.Connection, document: PaperDocument) -> None:
+        data = model_to_dict(document)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO documents (
+                document_id, source_path, filename, file_type, title, sha256,
+                parser, status, summary, created_at, updated_at, metadata
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["document_id"],
+                data["source_path"],
+                data["filename"],
+                data["file_type"],
+                data["title"],
+                data["sha256"],
+                data["parser"],
+                data["status"],
+                data.get("summary", ""),
+                data["created_at"],
+                data["updated_at"],
+                _json(data.get("metadata")),
+            ),
+        )
 
     def delete_document_payload(self, document_id: str) -> None:
         with self.connect() as conn:
@@ -220,99 +242,106 @@ class CorpusStorage:
 
     def save_elements(self, document_id: str, elements: list[ContentElement]) -> None:
         with self.connect() as conn:
-            conn.execute("DELETE FROM elements WHERE document_id = ?", (document_id,))
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO elements (
-                    element_id, document_id, sequence, type, text, page_idx, section,
-                    bbox, asset_path, html, latex, caption, footnote, metadata
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        e.element_id,
-                        e.document_id,
-                        e.sequence,
-                        e.type,
-                        e.text,
-                        e.page_idx,
-                        e.section,
-                        _json(e.bbox) if e.bbox is not None else None,
-                        e.asset_path,
-                        e.html,
-                        e.latex,
-                        e.caption,
-                        e.footnote,
-                        _json(e.metadata),
-                    )
-                    for e in elements
-                ],
+            self._save_elements(conn, document_id, elements)
+
+    def _save_elements(self, conn: sqlite3.Connection, document_id: str, elements: list[ContentElement]) -> None:
+        conn.execute("DELETE FROM elements WHERE document_id = ?", (document_id,))
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO elements (
+                element_id, document_id, sequence, type, text, page_idx, section,
+                bbox, asset_path, html, latex, caption, footnote, metadata
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    e.element_id,
+                    e.document_id,
+                    e.sequence,
+                    e.type,
+                    e.text,
+                    e.page_idx,
+                    e.section,
+                    _json(e.bbox) if e.bbox is not None else None,
+                    e.asset_path,
+                    e.html,
+                    e.latex,
+                    e.caption,
+                    e.footnote,
+                    _json(e.metadata),
+                )
+                for e in elements
+            ],
+        )
 
     def save_chunks(self, document_id: str, chunks: list[EvidenceChunk]) -> None:
         with self.connect() as conn:
-            conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
-            self._delete_fts_document(conn, document_id)
+            self._save_chunks(conn, document_id, chunks)
+
+    def _save_chunks(self, conn: sqlite3.Connection, document_id: str, chunks: list[EvidenceChunk]) -> None:
+        conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
+        self._delete_fts_document(conn, document_id)
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO chunks (
+                chunk_id, document_id, element_ids, text, search_text, type,
+                page_start, page_end, section, metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    c.chunk_id,
+                    c.document_id,
+                    _json(c.element_ids),
+                    c.text,
+                    c.search_text,
+                    c.type,
+                    c.page_start,
+                    c.page_end,
+                    c.section,
+                    _json(c.metadata),
+                )
+                for c in chunks
+            ],
+        )
+        if self._has_fts(conn):
             conn.executemany(
                 """
-                INSERT OR REPLACE INTO chunks (
-                    chunk_id, document_id, element_ids, text, search_text, type,
-                    page_start, page_end, section, metadata
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO chunks_fts (chunk_id, document_id, search_text, text)
+                VALUES (?, ?, ?, ?)
                 """,
-                [
-                    (
-                        c.chunk_id,
-                        c.document_id,
-                        _json(c.element_ids),
-                        c.text,
-                        c.search_text,
-                        c.type,
-                        c.page_start,
-                        c.page_end,
-                        c.section,
-                        _json(c.metadata),
-                    )
-                    for c in chunks
-                ],
+                [(c.chunk_id, c.document_id, c.search_text, c.text) for c in chunks],
             )
-            try:
-                conn.executemany(
-                    """
-                    INSERT INTO chunks_fts (chunk_id, document_id, search_text, text)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    [(c.chunk_id, c.document_id, c.search_text, c.text) for c in chunks],
-                )
-            except sqlite3.OperationalError:
-                pass
 
     def save_assets(self, document_id: str, assets: list[AssetRef]) -> None:
         with self.connect() as conn:
-            conn.execute("DELETE FROM assets WHERE document_id = ?", (document_id,))
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO assets (
-                    asset_id, document_id, kind, path, page_idx, bbox, caption, metadata
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        a.asset_id,
-                        a.document_id,
-                        a.kind,
-                        a.path,
-                        a.page_idx,
-                        _json(a.bbox) if a.bbox is not None else None,
-                        a.caption,
-                        _json(a.metadata),
-                    )
-                    for a in assets
-                ],
+            self._save_assets(conn, document_id, assets)
+
+    def _save_assets(self, conn: sqlite3.Connection, document_id: str, assets: list[AssetRef]) -> None:
+        conn.execute("DELETE FROM assets WHERE document_id = ?", (document_id,))
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO assets (
+                asset_id, document_id, kind, path, page_idx, bbox, caption, metadata
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    a.asset_id,
+                    a.document_id,
+                    a.kind,
+                    a.path,
+                    a.page_idx,
+                    _json(a.bbox) if a.bbox is not None else None,
+                    a.caption,
+                    _json(a.metadata),
+                )
+                for a in assets
+            ],
+        )
 
     def find_document_by_hash(self, sha256: str) -> Optional[PaperDocument]:
         with self.connect() as conn:
@@ -423,8 +452,10 @@ class CorpusStorage:
                     """,
                     params,
                 ).fetchall()
-        except sqlite3.OperationalError:
-            return []
+        except sqlite3.OperationalError as exc:
+            if str(exc).lower() == "no such table: chunks_fts":
+                return []
+            raise
         return [self._row_to_chunk(row) for row in rows]
 
     def _search_chunks_like(
