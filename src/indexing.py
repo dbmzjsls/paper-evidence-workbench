@@ -134,10 +134,7 @@ class IndexingService:
 
     def save_parsed_document(self, parsed: ParsedDocument) -> list[EvidenceChunk]:
         chunks = build_evidence_chunks(parsed.document, parsed.elements)
-        self.storage.save_document(parsed.document)
-        self.storage.save_elements(parsed.document.document_id, parsed.elements)
-        self.storage.save_assets(parsed.document.document_id, parsed.assets)
-        self.storage.save_chunks(parsed.document.document_id, chunks)
+        self.storage.save_document_payload(parsed, chunks)
         return chunks
 
     def rebuild_vector_index(self) -> dict:
