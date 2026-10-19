@@ -22,6 +22,58 @@ def corpus_snapshot(storage):
         }
 
 
+def test_connections_enforce_foreign_keys(tmp_path):
+    storage = CorpusStorage(str(tmp_path / "corpus.sqlite3"))
+
+    with storage.connect() as conn:
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
+            conn.execute(
+                """
+                INSERT INTO elements (element_id, document_id, sequence, type)
+                VALUES ('orphan', 'missing-document', 0, 'text')
+                """
+            )
+
+
+def test_clear_corpus_allows_missing_optional_fts(tmp_path):
+    storage = CorpusStorage(str(tmp_path / "corpus.sqlite3"))
+    with storage.connect() as conn:
+        conn.execute("DROP TABLE chunks_fts")
+
+    storage.clear_corpus()
+
+
+def test_clear_corpus_rolls_back_when_fts_delete_fails(tmp_path, monkeypatch):
+    source = tmp_path / "paper.md"
+    source.write_text("evidence", encoding="utf-8")
+    storage = CorpusStorage(str(tmp_path / "corpus.sqlite3"))
+    service = IndexingService(storage=storage, build_vectors=False)
+    assert service.ingest_path(source).status == "completed"
+    before = corpus_snapshot(storage)
+    real_connect = sqlite3.connect
+
+    class FailingClearConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql.strip() == "DELETE FROM chunks_fts":
+                raise sqlite3.OperationalError("injected FTS delete failure")
+            return super().execute(sql, *args, **kwargs)
+
+    monkeypatch.setattr(
+        sqlite3,
+        "connect",
+        lambda *args, **kwargs: real_connect(
+            *args,
+            **kwargs,
+            factory=FailingClearConnection,
+        ),
+    )
+    with pytest.raises(sqlite3.OperationalError, match="injected FTS delete failure"):
+        storage.clear_corpus()
+
+    assert corpus_snapshot(storage) == before
+
+
 @pytest.mark.parametrize("table", ["elements", "assets", "chunks"])
 @pytest.mark.parametrize("existing", [False, True])
 def test_failed_document_write_rolls_back_and_can_retry(tmp_path, table, existing):

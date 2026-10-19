@@ -47,8 +47,9 @@ class CorpusStorage:
     @contextmanager
     def connect(self):
         conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
         try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.row_factory = sqlite3.Row
             yield conn
             conn.commit()
         except BaseException:
@@ -188,10 +189,8 @@ class CorpusStorage:
             conn.execute("DELETE FROM reports")
             conn.execute("DELETE FROM assets")
             conn.execute("DELETE FROM chunks")
-            try:
+            if self._has_fts(conn):
                 conn.execute("DELETE FROM chunks_fts")
-            except sqlite3.OperationalError:
-                pass
             conn.execute("DELETE FROM elements")
             conn.execute("DELETE FROM documents")
 
