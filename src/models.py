@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -80,7 +80,21 @@ class Citation(BaseModel):
     evidence_type: str = "text"
 
 
-class QueryResult(BaseModel):
+class DegradationReason(BaseModel):
+    stage: Literal["request", "vector", "rerank", "llm"]
+    code: str
+    message: str
+    fallback: str
+
+
+class ExecutionMetadata(BaseModel):
+    retrieval_mode_requested: str = "ensemble"
+    retrieval_mode_used: str = "unknown"
+    degraded: bool = False
+    degradation_reason: list[DegradationReason] = Field(default_factory=list)
+
+
+class QueryResult(ExecutionMetadata):
     question: str
     answer: str
     citations: list[Citation] = Field(default_factory=list)
@@ -101,7 +115,7 @@ class ScreeningItem(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
 
 
-class ScreeningReport(BaseModel):
+class ScreeningReport(ExecutionMetadata):
     report_id: str
     topic: str
     created_at: str = Field(default_factory=utc_now_iso)

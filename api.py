@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from src.config import Config
 from src.indexing import IndexingService, get_db_stats
+from src.models import ExecutionMetadata, QueryResult, ScreeningReport
 from src.parsers import discover_files, is_supported
 from src.retrieval import ResearchRAG
 from src.storage import CorpusStorage
@@ -197,7 +198,7 @@ async def rebuild(background_tasks: BackgroundTasks):
     return {"job_id": job_id, "status": "queued", "path": Config.DATA_DIR}
 
 
-@app.post("/query")
+@app.post("/query", response_model=QueryResult)
 async def query(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question is required")
@@ -209,7 +210,10 @@ async def query_stream(req: QueryRequest):
     async def generate():
         try:
             result = ResearchRAG().answer(req.question, mode=req.mode)
-            yield f"data: {result.answer}\n\n"
+            metadata = ExecutionMetadata.model_validate(result.model_dump())
+            yield f"event: metadata\ndata: {metadata.model_dump_json()}\n\n"
+            answer = result.answer.replace("\r\n", "\n").replace("\r", "\n")
+            yield "".join(f"data: {line}\n" for line in answer.split("\n")) + "\n"
             yield "data: [DONE]\n\n"
         except Exception as exc:
             yield f"data: [ERROR] {exc}\n\n"
@@ -217,7 +221,7 @@ async def query_stream(req: QueryRequest):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-@app.post("/screen")
+@app.post("/screen", response_model=ScreeningReport)
 async def screen(req: ScreenRequest):
     if not req.topic.strip():
         raise HTTPException(status_code=400, detail="Topic is required")
