@@ -199,13 +199,30 @@ async function runScreen() {
   }
 }
 
+function renderExecutionStatus(result) {
+  if (typeof result.retrieval_mode_requested !== "string" ||
+      typeof result.retrieval_mode_used !== "string" ||
+      !result.retrieval_mode_used || result.retrieval_mode_used === "unknown" ||
+      typeof result.degraded !== "boolean" || !Array.isArray(result.degradation_reason)) return "";
+  return `
+    <section class="evidence-block">
+      <div class="screen-meta">
+        <span class="pill ${result.degraded ? "weak" : "strong"}">${result.degraded ? "Degraded" : "Normal"}</span>
+        <span>Requested: ${escapeHtml(result.retrieval_mode_requested)} · Used: ${escapeHtml(result.retrieval_mode_used)}</span>
+      </div>
+      ${result.degradation_reason.map((reason) => `<p>${escapeHtml(reason.message)}</p>`).join("")}
+    </section>
+  `;
+}
+
 function renderScreen(report) {
   const items = report.items || [];
+  const status = renderExecutionStatus(report);
   if (!items.length) {
-    els.screenResults.innerHTML = `<section class="screen-item"><p>No matching evidence found.</p></section>`;
+    els.screenResults.innerHTML = `${status}<section class="screen-item"><p>No matching evidence found.</p></section>`;
     return;
   }
-  els.screenResults.innerHTML = items
+  els.screenResults.innerHTML = status + items
     .map((item, index) => {
       const strength = item.relevance_score >= 0.68 ? "strong" : item.relevance_score >= 0.38 ? "medium" : "weak";
       return `
@@ -253,6 +270,7 @@ async function runQuery() {
       body: JSON.stringify({ question }),
     });
     els.answerResults.innerHTML = `
+      ${renderExecutionStatus(result)}
       <section class="answer-block">${escapeHtml(result.answer || "")}</section>
       <section class="evidence-links">
         ${(result.citations || [])

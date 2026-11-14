@@ -452,7 +452,7 @@ def test_retrieve_modes_use_distinct_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ResearchRAG,
         "_vector_rank_scores",
-        lambda _self, _query, k: {vector_chunk.chunk_id: 1.0},
+        lambda _self, _query, k, **kwargs: {vector_chunk.chunk_id: 1.0},
     )
 
     rag = ResearchRAG(storage=storage)

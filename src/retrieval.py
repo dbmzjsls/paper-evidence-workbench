@@ -3,18 +3,59 @@ from __future__ import annotations
 import math
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.config import Config
 from src.models import (
     Citation,
+    DegradationReason,
+    ExecutionMetadata,
     EvidenceChunk,
     QueryResult,
     ScreeningItem,
     ScreeningReport,
 )
 from src.storage import CorpusStorage
+
+
+@dataclass
+class RetrievalExecution:
+    retrieval_mode_requested: str = "ensemble"
+    normalized_mode: str = "ensemble"
+    vector_used: bool = False
+    keyword_used: bool = False
+    rerank_used: bool = False
+    query_variant_count: int = 0
+    degradation_reason: list[DegradationReason] = field(default_factory=list)
+
+    def record(self, stage: str, code: str, message: str, fallback: str) -> None:
+        key = (stage, code, fallback)
+        if not any((reason.stage, reason.code, reason.fallback) == key
+                   for reason in self.degradation_reason):
+            self.degradation_reason.append(DegradationReason(
+                stage=stage, code=code, message=message, fallback=fallback,
+            ))
+
+    def metadata(self) -> ExecutionMetadata:
+        if self.vector_used and self.keyword_used:
+            used = "ensemble"
+        elif self.vector_used:
+            used = "vector"
+        elif self.keyword_used:
+            used = "keyword"
+        else:
+            used = "none"
+        if self.query_variant_count > 1:
+            used += "+multiquery"
+        if self.rerank_used:
+            used += "+rerank"
+        return ExecutionMetadata(
+            retrieval_mode_requested=self.retrieval_mode_requested,
+            retrieval_mode_used=used,
+            degraded=bool(self.degradation_reason),
+            degradation_reason=list(self.degradation_reason),
+        )
 
 
 @dataclass
@@ -37,12 +78,21 @@ class ResearchRAG:
         mode: str = "ensemble",
         include_keywords: list[str] | None = None,
         exclude_keywords: list[str] | None = None,
+        *,
+        execution: RetrievalExecution | None = None,
     ) -> list[RetrievedEvidence]:
         k = k or Config.RETRIEVAL_CONTEXTS
-        mode = self._normalize_mode(mode)
+        execution = execution if execution is not None else RetrievalExecution(mode)
+        execution.retrieval_mode_requested = mode
+        normalized = self._normalize_mode(mode)
+        execution.normalized_mode = normalized
+        if mode.strip().lower() != normalized:
+            execution.record("request", "unsupported_mode", "检索模式不受支持，已使用混合检索。", "ensemble")
+        mode = normalized
         include_keywords = [kw.strip() for kw in include_keywords or [] if kw.strip()]
         exclude_keywords = [kw.strip() for kw in exclude_keywords or [] if kw.strip()]
         queries = self._queries_for_mode(query, mode)
+        execution.query_variant_count = len(queries)
 
         candidate_limit = max(k * 20, Config.KEYWORD_CANDIDATE_LIMIT)
         keyword_candidates: list[EvidenceChunk] = []
@@ -56,6 +106,7 @@ class ResearchRAG:
                         exclude_keywords=exclude_keywords,
                     )
                 )
+                execution.keyword_used = True
             keyword_candidates = list(
                 {chunk.chunk_id: chunk for chunk in keyword_candidates}.values()
             )
@@ -67,6 +118,7 @@ class ResearchRAG:
                 vector_hits = self._vector_rank_scores(
                     search_query,
                     k=max(k * 4, Config.VECTOR_K),
+                    execution=execution,
                 )
                 for chunk in self.storage.get_chunks_by_ids(vector_hits.keys()):
                     if self._passes_filters(chunk, include_keywords, exclude_keywords):
@@ -95,24 +147,27 @@ class ResearchRAG:
             for chunk_id, score in ranked[:candidate_count]
             if chunk_id in by_id
         ]
-        return self._rerank(query, candidates, force=mode == "rerank")[:k]
+        return self._rerank(query, candidates, force=mode == "rerank", execution=execution)[:k]
 
     def answer(self, question: str, mode: str = "ensemble") -> QueryResult:
-        retrieved = self.retrieve(question, k=Config.RETRIEVAL_CONTEXTS, mode=mode)
+        execution = RetrievalExecution(mode)
+        retrieved = self.retrieve(question, k=Config.RETRIEVAL_CONTEXTS, mode=mode, execution=execution)
         if not retrieved:
             return QueryResult(
                 question=question,
                 answer="当前语料库中没有可支持回答的证据。请先导入论文，或换一个更具体的研究问题。",
                 citations=[],
                 contexts=[],
+                **execution.metadata().model_dump(),
             )
 
         citations = [self._citation(i, item.chunk) for i, item in enumerate(retrieved, 1)]
         chunks = [item.chunk for item in retrieved]
-        answer = self._llm_answer(question, chunks, citations) or self._extractive_answer(
+        answer = self._llm_answer(question, chunks, citations, execution=execution) or self._extractive_answer(
             question, citations
         )
-        return QueryResult(question=question, answer=answer, citations=citations, contexts=chunks)
+        return QueryResult(question=question, answer=answer, citations=citations, contexts=chunks,
+                           **execution.metadata().model_dump())
 
     def screen(
         self,
@@ -122,12 +177,14 @@ class ResearchRAG:
         exclude_keywords: list[str] | None = None,
     ) -> ScreeningReport:
         limit = min(limit or Config.SCREEN_DEFAULT_LIMIT, Config.SCREEN_MAX_LIMIT)
+        execution = RetrievalExecution("ensemble")
         retrieved = self.retrieve(
             topic,
             k=max(limit * 8, Config.RETRIEVAL_CONTEXTS),
             mode="ensemble",
             include_keywords=include_keywords,
             exclude_keywords=exclude_keywords,
+            execution=execution,
         )
 
         grouped: dict[str, list[RetrievedEvidence]] = {}
@@ -177,6 +234,7 @@ class ResearchRAG:
             report_id=f"report_{uuid.uuid4().hex[:12]}",
             topic=topic,
             items=items[:limit],
+            **execution.metadata().model_dump(),
             assumptions=[
                 "Scores are based on retrieved evidence, not a full peer-review judgment.",
                 "Research ideas are marked as hypotheses and should be verified by reading the cited passages.",
@@ -185,15 +243,30 @@ class ResearchRAG:
         self.storage.save_report(report)
         return report
 
-    def _vector_rank_scores(self, query: str, k: int) -> dict[str, float]:
+    def _vector_rank_scores(
+        self, query: str, k: int, *, execution: RetrievalExecution | None = None,
+    ) -> dict[str, float]:
+        execution = execution if execution is not None else RetrievalExecution("vector", "vector")
+        fallback = "none" if execution.normalized_mode == "vector" else "keyword"
+        suffix = "已使用关键词检索。" if fallback == "keyword" else "无可用检索结果。"
         index_path = Path(Config.VECTOR_DIR) / "index.faiss"
         if not index_path.exists():
+            execution.record("vector", "vector_index_missing", "向量索引不存在，" + suffix, fallback)
+            return {}
+        if self._vectorstore is None and not Config.TRUST_LOCAL_FAISS_INDEX:
+            execution.record("vector", "vector_loading_disabled", "向量索引加载已禁用，" + suffix, fallback)
             return {}
         try:
             vectorstore = self._load_vectorstore()
+        except Exception:
+            execution.record("vector", "vector_load_failed", "向量索引加载失败，" + suffix, fallback)
+            return {}
+        try:
             docs = vectorstore.similarity_search(query, k=k)
         except Exception:
+            execution.record("vector", "vector_search_failed", "向量检索失败，" + suffix, fallback)
             return {}
+        execution.vector_used = True
         total = max(len(docs), 1)
         scores: dict[str, float] = {}
         for rank, doc in enumerate(docs, 1):
@@ -228,8 +301,14 @@ class ResearchRAG:
         query: str,
         candidates: list[RetrievedEvidence],
         force: bool = False,
+        *,
+        execution: RetrievalExecution | None = None,
     ) -> list[RetrievedEvidence]:
-        if len(candidates) < 2 or not (force or Config.ENABLE_RERANK) or not Config.RERANK_MODEL:
+        execution = execution if execution is not None else RetrievalExecution()
+        if len(candidates) < 2 or not (force or Config.ENABLE_RERANK):
+            return candidates
+        if not Config.RERANK_MODEL:
+            execution.record("rerank", "reranker_not_configured", "未配置重排模型，已保留原始排序。", "original_order")
             return candidates
         try:
             rerank_scores = self._rerank_scores(
@@ -237,16 +316,25 @@ class ResearchRAG:
                 [candidate.chunk.search_text or candidate.chunk.text for candidate in candidates],
             )
         except Exception:
+            execution.record("rerank", "reranker_failed", "重排不可用，已保留原始排序。", "original_order")
             return candidates
-        if len(rerank_scores) != len(candidates):
+        try:
+            valid_scores = [float(score) for score in rerank_scores]
+            valid = len(valid_scores) == len(candidates) and all(math.isfinite(score) for score in valid_scores)
+        except (TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
+            execution.record("rerank", "reranker_invalid_scores", "重排分数无效，已保留原始排序。", "original_order")
             return candidates
 
         rescored: list[RetrievedEvidence] = []
-        for candidate, rerank_score in zip(candidates, rerank_scores):
+        for candidate, rerank_score in zip(candidates, valid_scores):
             # Keep a small contribution from the hybrid score for deterministic tie-breaking.
-            score = float(rerank_score) + (candidate.score * 0.001)
+            score = rerank_score + (candidate.score * 0.001)
             rescored.append(RetrievedEvidence(chunk=candidate.chunk, score=score))
-        return sorted(rescored, key=lambda item: item.score, reverse=True)
+        ranked = sorted(rescored, key=lambda item: item.score, reverse=True)
+        execution.rerank_used = True
+        return ranked
 
     def _normalize_mode(self, mode: str) -> str:
         normalized = mode.strip().lower()
@@ -269,7 +357,7 @@ class ResearchRAG:
         reranker = self._load_reranker()
         pairs = [[query, passage] for passage in passages]
         scores = reranker.predict(pairs)
-        return [float(score) for score in scores]
+        return list(scores)
 
     def _load_reranker(self):
         if self._reranker_unavailable:
@@ -356,9 +444,13 @@ class ResearchRAG:
         question: str,
         chunks: list[EvidenceChunk],
         citations: list[Citation],
+        *,
+        execution: RetrievalExecution | None = None,
     ) -> str:
+        execution = execution if execution is not None else RetrievalExecution()
         api_key = Config.get_api_key()
         if not api_key:
+            execution.record("llm", "llm_not_configured", "未配置回答模型，已返回抽取式回答。", "extractive")
             return ""
         try:
             from langchain_openai import ChatOpenAI
@@ -383,9 +475,13 @@ class ResearchRAG:
                 f"Question:\n{question}\n\nEvidence:\n{context}\n\nAnswer:"
             )
             response = llm.invoke(prompt)
-            return response.content if hasattr(response, "content") else str(response)
+            content = response.content
+            if isinstance(content, str) and content.strip():
+                return content
+            execution.record("llm", "llm_empty_response", "回答模型未返回有效文本，已返回抽取式回答。", "extractive")
         except Exception:
-            return ""
+            execution.record("llm", "llm_failed", "回答生成失败，已返回抽取式回答。", "extractive")
+        return ""
 
     def _extractive_answer(self, question: str, citations: list[Citation]) -> str:
         lines = ["基于当前检索证据，可以先给出以下审慎结论："]
